@@ -1,11 +1,8 @@
-use std::collections::HashMap;
-
-#[derive(Debug, PartialEq)]
-pub enum ParseError {
-    IncompleteFieldLine,
-    InvalidFieldLine,
-    InvalidHeaderKey,
-}
+use crate::request::{self, ParseError};
+use std::{collections::HashMap, ptr::read};
+// #[derive(Debug, PartialEq)]
+// pub enum ParseError {
+// }
 const SEPARATOR: &str = "\r\n";
 
 #[derive(Debug)]
@@ -40,15 +37,17 @@ impl Headers {
     }
     pub fn parse(&mut self, data: &str) -> Result<(usize, bool), ParseError> {
         let mut read = 0;
+        let mut done = false;
         loop {
             let current_data = &data[read..];
             let Some(idx) = current_data.find(SEPARATOR) else {
-                return Ok((read, false));
+                break;
             };
             //empy line parsing completed
             if idx == 0 {
                 read += SEPARATOR.len();
-                return Ok((read, true));
+                done = true;
+                break;
             }
             let header_line = &current_data[..idx];
             let header_line = parse_header(header_line)?;
@@ -58,6 +57,7 @@ impl Headers {
             self.set(header_line.0, header_line.1.to_string());
             read += idx + SEPARATOR.len();
         }
+        Ok((read, done))
     }
 }
 fn parse_header(field_line: &str) -> Result<(&str, &str), ParseError> {
@@ -97,6 +97,8 @@ fn is_valid_token(value: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use crate::headers;
+
     use super::*;
     #[test]
     fn valid_single_header() {
@@ -122,6 +124,13 @@ mod tests {
         let data = "H©st: localhost:42069\r\n\r\n";
         let result = headers.parse(data).expect_err("We should get error here.");
         assert_eq!(result, ParseError::InvalidHeaderKey);
+    }
+    #[test]
+    fn incomplete_header() {
+        let mut headers = Headers::new();
+        let data = "Host: localhost\r\nUser-Agent: curl\r\n";
+        let result = headers.parse(data).expect("Should not return an error");
+        assert!(!result.1, "not done")
     }
     #[test]
     fn multiple_headers() {

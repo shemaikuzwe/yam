@@ -1,15 +1,18 @@
+use std::cmp::min;
 
+use crate::headers::Headers;
 #[derive(Debug)]
 pub struct Request {
     pub request_line: RequestLine,
+    pub headers: Headers,
     pub body: String,
     parse_state: ParseState,
 }
 #[derive(Debug)]
-struct RequestLine {
-    http_version: String,
-    request_target: String,
-    method: String,
+pub struct RequestLine {
+    pub http_version: String,
+    pub request_target: String,
+    pub method: String,
 }
 
 #[derive(Debug)]
@@ -17,20 +20,22 @@ enum ParseState {
     INIT,
     HEADERS,
     BODY,
-    ERROR,
-    DONE,
 }
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq)]
 pub enum ParseError {
     IncompleteRequestLine,
     InvalidRequestLine,
     UnsupportedHttpVersion,
+    IncompleteFieldLine,
+    InvalidFieldLine,
+    InvalidHeaderKey,
+    InvalidContentLengthHeader,
 }
 const SEPARATOR: &str = "\r\n";
 impl Request {
     pub fn parse(&mut self, data: &str) -> Result<usize, ParseError> {
-        let read = 0;
+        let mut read = 0;
         loop {
             let curr_data = &data[read..];
             if curr_data.is_empty() {
@@ -38,20 +43,41 @@ impl Request {
             }
             match self.parse_state {
                 ParseState::INIT => {
-                    let result = parse_request_line(data)?;
+                    let result = parse_request_line(curr_data)?;
                     if result.1 == 0 {
                         return Ok(result.1);
                     }
                     self.request_line = result.0;
+                    read += result.1;
                     self.parse_state = ParseState::HEADERS
                 }
                 ParseState::HEADERS => {
-                    println!("parsing headers")
+                    let result = self.headers.parse(curr_data)?;
+                    read += result.0;
+                    if result.1 {
+                        self.parse_state = ParseState::BODY
+                    }
                 }
                 ParseState::BODY => {
-                    println!("parsing body")
+                    let length = self
+                        .headers
+                        .get("content-length")
+                        .ok_or(ParseError::InvalidContentLengthHeader)?
+                        .parse::<usize>()
+                        .map_err(|_| ParseError::InvalidContentLengthHeader)?;
+                    if length == 0 {
+                        return Ok(read);
+                    }
+                    let remaining = min(curr_data.len(), length - self.body.len());
+                    self.body.push_str(&curr_data[..remaining]);
+                    read += remaining;
+                    if self.body.len() == remaining {
+                        return Ok(read);
+                    }
+                    if remaining == 0 && self.body.len() != length {
+                        return Err(ParseError::InvalidContentLengthHeader);
+                    }
                 }
-                _ => unimplemented!("will be done later"),
             }
         }
     }
@@ -91,6 +117,7 @@ fn parse_request_line(data: &str) -> Result<(RequestLine, usize), ParseError> {
         read,
     ))
 }
+
 // let line = std::str::from_utf8(line_bytes).ok()?;
 
 #[cfg(test)]
