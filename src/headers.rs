@@ -1,9 +1,6 @@
-use crate::request::{self, ParseError};
-use std::{collections::HashMap, ptr::read};
-// #[derive(Debug, PartialEq)]
-// pub enum ParseError {
-// }
-const SEPARATOR: &str = "\r\n";
+use crate::request::ParseError;
+use std::collections::HashMap;
+const SEPARATOR: &[u8] = b"\r\n";
 
 #[derive(Debug)]
 pub struct Headers {
@@ -35,12 +32,15 @@ impl Headers {
         let name = name.to_lowercase();
         self.headers.remove(name.as_str());
     }
-    pub fn parse(&mut self, data: &str) -> Result<(usize, bool), ParseError> {
+    pub fn parse(&mut self, data: &[u8]) -> Result<(usize, bool), ParseError> {
         let mut read = 0;
         let mut done = false;
         loop {
             let current_data = &data[read..];
-            let Some(idx) = current_data.find(SEPARATOR) else {
+            let Some(idx) = current_data
+                .windows(SEPARATOR.len())
+                .position(|window| window == SEPARATOR)
+            else {
                 break;
             };
             //empy line parsing completed
@@ -60,12 +60,16 @@ impl Headers {
         Ok((read, done))
     }
 }
-fn parse_header(field_line: &str) -> Result<(&str, &str), ParseError> {
-    let parts = field_line
-        .split_once(":")
-        .ok_or(ParseError::InvalidFieldLine)?;
-    let key = parts.0;
-    let val = parts.1.trim();
+fn parse_header(field_line: &[u8]) -> Result<(&str, &str), ParseError> {
+    let mut parts = field_line.splitn(2, |&x| x == b':');
+
+    let key = parts.next().ok_or(ParseError::InvalidFieldLine)?;
+
+    let key = str::from_utf8(key).map_err(|_| ParseError::IncompleteFieldLine)?;
+    let val = parts.next().ok_or(ParseError::IncompleteFieldLine)?;
+    let val = str::from_utf8(val)
+        .map_err(|_| ParseError::IncompleteFieldLine)?
+        .trim();
     if key.ends_with(" ") {
         return Err(ParseError::InvalidFieldLine);
     }
@@ -97,13 +101,11 @@ fn is_valid_token(value: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use crate::headers;
-
     use super::*;
     #[test]
     fn valid_single_header() {
         let mut headers = Headers::new();
-        let data = "HOst: localhost:42069\r\nFOoFoo: barbar\r\n\r\n";
+        let data = b"HOst: localhost:42069\r\nFOoFoo: barbar\r\n\r\n";
         let result = headers
             .parse(data)
             .expect("it should have passed single header");
@@ -121,21 +123,21 @@ mod tests {
     #[test]
     fn bad_header_key() {
         let mut headers = Headers::new();
-        let data = "H©st: localhost:42069\r\n\r\n";
+        let data = b"H[st: localhost:42069\r\n\r\n";
         let result = headers.parse(data).expect_err("We should get error here.");
         assert_eq!(result, ParseError::InvalidHeaderKey);
     }
     #[test]
     fn incomplete_header() {
         let mut headers = Headers::new();
-        let data = "Host: localhost\r\nUser-Agent: curl\r\n";
+        let data = b"Host: localhost\r\nUser-Agent: curl\r\n";
         let result = headers.parse(data).expect("Should not return an error");
         assert!(!result.1, "not done")
     }
     #[test]
     fn multiple_headers() {
         let mut headers = Headers::new();
-        let data = "Host: localhost:42069\r\nHOst: localhost:3000\r\n\r\n";
+        let data = b"Host: localhost:42069\r\nHOst: localhost:3000\r\n\r\n";
         headers.parse(data).expect("Should noot get error here");
         let host = headers
             .get("host")
