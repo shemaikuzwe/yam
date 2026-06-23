@@ -18,19 +18,22 @@ impl Headers {
     }
     pub fn set(&mut self, name: &str, value: String) {
         let name = name.to_lowercase();
-        if let Some(val) = self.headers.get(name.as_str()) {
-            self.headers.insert(name, format!("{},{}", val, value));
+        self.headers.insert(name, value);
+    }
+    pub fn append(&mut self, name: &str, value: String) {
+        let name = name.to_lowercase();
+        if can_append_header(name.as_str()) {
+            if let Some(val) = self.headers.get(name.as_str()) {
+                self.headers.insert(name, format!("{},{}", val, value));
+            } else {
+                self.headers.insert(name, value);
+            }
         } else {
             self.headers.insert(name, value);
         }
     }
-    pub fn replace(&mut self, name: String, value: String) {
-        let name = name.to_lowercase();
-        self.headers.insert(name, value);
-    }
-    pub fn delete(&mut self, name: &str) {
-        let name = name.to_lowercase();
-        self.headers.remove(name.as_str());
+    pub fn iter(&self) -> impl Iterator<Item = (&String, &String)> {
+        self.headers.iter()
     }
     pub fn parse(&mut self, data: &[u8]) -> Result<(usize, bool), ParseError> {
         let mut read = 0;
@@ -54,7 +57,7 @@ impl Headers {
             if !is_valid_token(header_line.0) {
                 return Err(ParseError::InvalidHeaderKey);
             }
-            self.set(header_line.0, header_line.1.to_string());
+            self.append(header_line.0, header_line.1.to_string());
             read += idx + SEPARATOR.len();
         }
         Ok((read, done))
@@ -99,6 +102,13 @@ fn is_valid_token(value: &str) -> bool {
         })
 }
 
+fn can_append_header(name: &str) -> bool {
+    matches!(
+        name,
+        "accept" | "accept-encoding" | "accept-language" | "cache-control" | "warning" | "via"
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -137,12 +147,11 @@ mod tests {
     #[test]
     fn multiple_headers() {
         let mut headers = Headers::new();
-        let data = b"Host: localhost:42069\r\nHOst: localhost:3000\r\n\r\n";
+        let data = b"accept: text/html\r\naccept: application/json\r\n\r\n";
         headers.parse(data).expect("Should noot get error here");
-        let host = headers
-            .get("host")
-            .expect("should not get error while header.get(host)");
-        assert_eq!("localhost:42069,localhost:3000", host);
-        assert_ne!(" localhost:42069,localhost:3000", host);
+        let accept = headers
+            .get("accept")
+            .expect("should not get error while header.get(accept)");
+        assert_eq!("text/html,application/json", accept);
     }
 }
