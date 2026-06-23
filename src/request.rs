@@ -1,6 +1,6 @@
 use std::{
     cmp::min,
-    io::{self, Read}
+    io::{self, Read},
 };
 
 use crate::headers::Headers;
@@ -132,30 +132,42 @@ pub enum RequestError {
     RequestTooLarge,
     UnexexpectedEndOfInput,
 }
-pub fn request_from_reader<R: Read>(reader: &mut R) -> Result<Request, RequestError> {
-    let mut request = Request::new();
-    let mut buffer = [0_u8; 1024];
-    let mut buffer_index = 0;
-    while !request.done() {
-        if buffer_index == buffer.len() {
-            return Err(RequestError::RequestTooLarge);
-        }
-        let bytes_read = reader
-            .read(&mut buffer[buffer_index..])
-            .map_err(RequestError::Io)?;
-        if bytes_read == 0 {
-            return Err(RequestError::UnexexpectedEndOfInput);
-        }
-        buffer_index += bytes_read;
-        let read = request
-            .parse(&buffer[..buffer_index])
-            .map_err(RequestError::Parse)?;
-        buffer.copy_within(read..buffer_index, 0);
-        buffer_index -= read
-    }
-    Ok(request)
+pub struct RequestReader<R> {
+    reader: R,
+    buffer: [u8; 1024],
+    buffer_index: usize,
 }
-
+impl<R: Read> RequestReader<R> {
+    pub fn new(reader: R) -> Self {
+        Self {
+            reader,
+            buffer: [0; 1024],
+            buffer_index: 0,
+        }
+    }
+    pub fn handle_request(&mut self) -> Result<Request, RequestError> {
+        let mut request = Request::new();
+        while !request.done() {
+            if self.buffer_index == self.buffer.len() {
+                return Err(RequestError::RequestTooLarge);
+            }
+            let bytes_read = self
+                .reader
+                .read(&mut self.buffer[self.buffer_index..])
+                .map_err(RequestError::Io)?;
+            if bytes_read == 0 {
+                return Err(RequestError::UnexexpectedEndOfInput);
+            }
+            self.buffer_index += bytes_read;
+            let read = request
+                .parse(&self.buffer[..self.buffer_index])
+                .map_err(RequestError::Parse)?;
+            self.buffer.copy_within(read..self.buffer_index, 0);
+            self.buffer_index -= read
+        }
+        Ok(request)
+    }
+}
 fn parse_request_line(data: &[u8]) -> Result<(RequestLine, usize), ParseError> {
     let idx = data
         .windows(SEPARATOR.len())

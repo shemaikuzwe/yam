@@ -1,6 +1,6 @@
 use std::io::{self, Read};
 
-use http_server::request::request_from_reader;
+use http_server::request::RequestReader;
 
 struct ChunkReader {
     data: Vec<u8>,
@@ -47,8 +47,11 @@ fn test_full_request() {
         "\r\n",
         "hello world!\n",
     );
-    let mut reader = ChunkReader::new(data, 3);
-    let request = request_from_reader(&mut reader).expect("request should parse successfully");
+    let reader = ChunkReader::new(data, 3);
+    let mut request_reader = RequestReader::new(reader);
+    let request = request_reader
+        .handle_request()
+        .expect("request should parse successfully");
     let request_line = request.request_line.expect("Should have a request line");
     let host = request
         .headers
@@ -70,9 +73,14 @@ fn multiple_request_in_stream() {
         "Host: localhost\r\n",
         "\r\n",
     );
-    let mut reader = ChunkReader::new(data, 3);
-    let request1 = request_from_reader(&mut reader).expect("Should parse request 1");
-    let request2 = request_from_reader(&mut reader).expect("Should parse request 2");
+    let reader = ChunkReader::new(data, 3);
+    let mut request_reader = RequestReader::new(reader);
+    let request1 = request_reader
+        .handle_request()
+        .expect("Should parse request 1");
+    let request2 = request_reader
+        .handle_request()
+        .expect("Should parse request 2");
     let request_line = request1.request_line.expect("Should have a request line");
     assert_eq!(request_line.method, "GET");
     assert_eq!(request_line.request_target, "/");
@@ -85,8 +93,12 @@ fn multiple_request_in_stream() {
 #[test]
 fn should_handle_request_with_no_content_length() {
     let data = concat!("POST / HTTP/1.1\r\n", "Host: localhost\r\n", "\r\n",);
-    let mut reader = ChunkReader::new(data, 10);
-    let result = request_from_reader(&mut reader).expect("Request to be parsed");
+    let reader = ChunkReader::new(data, 10);
+
+    let mut request_reader = RequestReader::new(reader);
+    let result = request_reader
+        .handle_request()
+        .expect("Request to be parsed");
     assert_eq!(result.body.len(), 0);
 }
 #[test]
@@ -98,8 +110,9 @@ fn should_handle_request_with_zero_content_length() {
         "Content-Length: 0\r\n",
         "\r\n",
     );
-    let mut reader = ChunkReader::new(data, 10);
-    let result = request_from_reader(&mut reader);
+    let reader = ChunkReader::new(data, 10);
+    let mut request_reader = RequestReader::new(reader);
+    let result = request_reader.handle_request();
     assert!(result.is_ok());
 }
 #[test]
@@ -109,7 +122,11 @@ fn should_handle_large_content_length() {
         1000,
         "x".repeat(1000)
     );
-    let mut reader = ChunkReader::new(&data, 50);
-    let result = request_from_reader(&mut reader).expect("Request to be parsed");
+    let reader = ChunkReader::new(&data, 50);
+
+    let mut request_reader = RequestReader::new(reader);
+    let result = request_reader
+        .handle_request()
+        .expect("Request to be parsed");
     assert_eq!(result.body.len(), 1000);
 }
