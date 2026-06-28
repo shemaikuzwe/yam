@@ -1,7 +1,9 @@
 use std::{
     cmp::min,
-    io::{self, Read},
+    io::{self},
 };
+
+use tokio::io::{AsyncRead, AsyncReadExt};
 
 use crate::headers::Headers;
 
@@ -137,7 +139,7 @@ pub struct RequestReader<R> {
     buffer: [u8; 1024],
     buffer_index: usize,
 }
-impl<R: Read> RequestReader<R> {
+impl<R: AsyncRead + Unpin> RequestReader<R> {
     pub fn new(reader: R) -> Self {
         Self {
             reader,
@@ -145,7 +147,7 @@ impl<R: Read> RequestReader<R> {
             buffer_index: 0,
         }
     }
-    pub fn handle_request(&mut self) -> Result<Request, RequestError> {
+    pub async fn handle_request(&mut self) -> Result<Request, RequestError> {
         let mut request = Request::new();
         while !request.done() {
             if self.buffer_index == self.buffer.len() {
@@ -154,6 +156,7 @@ impl<R: Read> RequestReader<R> {
             let bytes_read = self
                 .reader
                 .read(&mut self.buffer[self.buffer_index..])
+                .await
                 .map_err(RequestError::Io)?;
             if bytes_read == 0 {
                 return Err(RequestError::UnexexpectedEndOfInput);

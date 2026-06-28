@@ -1,6 +1,11 @@
-use std::io::{self, Read};
+use std::{
+    io,
+    pin::Pin,
+    task::{Context, Poll},
+};
 
 use http_server::request::RequestReader;
+use tokio::io::{AsyncRead, ReadBuf};
 
 struct ChunkReader {
     data: Vec<u8>,
@@ -18,10 +23,14 @@ impl ChunkReader {
     }
 }
 
-impl Read for ChunkReader {
-    fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+impl AsyncRead for ChunkReader {
+    fn poll_read(
+        mut self: Pin<&mut Self>,
+        _cx: &mut Context<'_>,
+        buffer: &mut ReadBuf<'_>,
+    ) -> Poll<io::Result<()>> {
         if self.position >= self.data.len() {
-            return Ok(0); // EOF
+            return Poll::Ready(Ok(())); // EOF
         }
 
         let remaining = &self.data[self.position..];
@@ -29,17 +38,17 @@ impl Read for ChunkReader {
         let amount = remaining
             .len()
             .min(self.num_bytes_per_read)
-            .min(buffer.len());
+            .min(buffer.remaining());
 
-        buffer[..amount].copy_from_slice(&remaining[..amount]);
+        buffer.put_slice(&remaining[..amount]);
         self.position += amount;
 
-        Ok(amount)
+        Poll::Ready(Ok(()))
     }
 }
 
-#[test]
-fn test_full_request() {
+#[tokio::test]
+async fn test_full_request() {
     let data = concat!(
         "POST /submit HTTP/1.1\r\n",
         "Host: localhost:42069\r\n",
@@ -51,6 +60,7 @@ fn test_full_request() {
     let mut request_reader = RequestReader::new(reader);
     let request = request_reader
         .handle_request()
+        .await
         .expect("request should parse successfully");
     let request_line = request.request_line.expect("Should have a request line");
     let host = request
@@ -63,8 +73,8 @@ fn test_full_request() {
     assert_eq!(request.body, b"hello world!\n");
 }
 
-#[test]
-fn multiple_request_in_stream() {
+#[tokio::test]
+async fn multiple_request_in_stream() {
     let data = concat!(
         "GET / HTTP/1.1\r\n",
         "Host: localhost\r\n",
@@ -77,9 +87,11 @@ fn multiple_request_in_stream() {
     let mut request_reader = RequestReader::new(reader);
     let request1 = request_reader
         .handle_request()
+        .await
         .expect("Should parse request 1");
     let request2 = request_reader
         .handle_request()
+        .await
         .expect("Should parse request 2");
     let request_line = request1.request_line.expect("Should have a request line");
     assert_eq!(request_line.method, "GET");
@@ -90,20 +102,21 @@ fn multiple_request_in_stream() {
     assert_eq!(request_line2.request_target, "/about")
 }
 
-#[test]
-fn should_handle_request_with_no_content_length() {
+#[tokio::test]
+async fn should_handle_request_with_no_content_length() {
     let data = concat!("POST / HTTP/1.1\r\n", "Host: localhost\r\n", "\r\n",);
     let reader = ChunkReader::new(data, 10);
 
     let mut request_reader = RequestReader::new(reader);
     let result = request_reader
         .handle_request()
+        .await
         .expect("Request to be parsed");
     assert_eq!(result.body.len(), 0);
 }
-#[test]
+#[tokio::test]
 
-fn should_handle_request_with_zero_content_length() {
+async fn should_handle_request_with_zero_content_length() {
     let data = concat!(
         "GET / HTTP/1.1\r\n",
         "Host: localhost\r\n",
@@ -112,11 +125,11 @@ fn should_handle_request_with_zero_content_length() {
     );
     let reader = ChunkReader::new(data, 10);
     let mut request_reader = RequestReader::new(reader);
-    let result = request_reader.handle_request();
+    let result = request_reader.handle_request().await;
     assert!(result.is_ok());
 }
-#[test]
-fn should_handle_large_content_length() {
+#[tokio::test]
+async fn should_handle_large_content_length() {
     let data = format!(
         "POST /upload HTTP/1.1\r\nHost: localhost\r\nContent-Length: {}\r\n\r\n{}",
         1000,
@@ -127,6 +140,7 @@ fn should_handle_large_content_length() {
     let mut request_reader = RequestReader::new(reader);
     let result = request_reader
         .handle_request()
+        .await
         .expect("Request to be parsed");
     assert_eq!(result.body.len(), 1000);
 }
