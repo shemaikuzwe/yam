@@ -31,15 +31,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "http-server"
-version = "0.1.0"
-dependencies = [
- "serde",
- "serde_json",
- "tokio",
-]
-
-[[package]]
 name = "itoa"
 version = "1.0.18"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -272,6 +263,32 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ae137229bcbd6cdf0f7b80a31df61766145077ddf49416a728b02cb3921ff3fc"
 dependencies = [
  "windows-link",
+]
+
+[[package]]
+name = "yam"
+version = "0.1.0"
+dependencies = [
+ "yam-client",
+ "yam-router",
+ "yam-server",
+]
+
+[[package]]
+name = "yam-client"
+version = "0.1.0"
+
+[[package]]
+name = "yam-router"
+version = "0.1.0"
+
+[[package]]
+name = "yam-server"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "tokio",
 ]
 
 [[package]]
