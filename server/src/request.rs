@@ -3,6 +3,7 @@ use std::{
     io::{self},
 };
 
+use serde::de::DeserializeOwned;
 use tokio::io::{AsyncRead, AsyncReadExt};
 
 use crate::headers::Headers;
@@ -126,6 +127,26 @@ impl Request {
         }
     }
 }
+
+//deserialization
+impl Request {
+    pub fn json<T>(&self) -> Result<T, serde_json::Error>
+    where
+        T: DeserializeOwned,
+    {
+        serde_json::from_slice(&self.body)
+    }
+    pub fn text(&self) -> Result<&str, std::str::Utf8Error> {
+        std::str::from_utf8(&self.body)
+    }
+    pub fn form<T>(&self) -> Result<T, serde_urlencoded::de::Error>
+    where
+        T: DeserializeOwned,
+    {
+        serde_urlencoded::from_bytes(&self.body)
+    }
+}
+
 #[derive(Debug)]
 pub enum RequestError {
     Io(io::Error),
@@ -239,7 +260,17 @@ fn parse_request_line(data: &[u8]) -> Result<(RequestLine, usize), ParseError> {
 
 #[cfg(test)]
 mod tests {
+    use std::assert_eq;
+
+    use serde::Deserialize;
+
     use super::*;
+
+    #[derive(Deserialize)]
+    struct Login {
+        email: String,
+        password: String,
+    }
     #[test]
     fn should_parse_request_line() {
         let result =
@@ -283,5 +314,43 @@ mod tests {
     fn should_handle_empty_request_line() {
         let result = parse_request_line(b"");
         assert!(result.is_err());
+    }
+    #[test]
+    fn should_desirialize_valid_json() {
+        let request = Request {
+            request_line: None,
+            headers: Headers::new(),
+            body: br#"{"email":"user@example.com","password":"1234"}"#.to_vec(),
+            parse_state: ParseState::DONE,
+        };
+        let login: Login = request.json().expect("Should be desirialized");
+        assert_eq!(login.email, "user@example.com");
+        assert_eq!(login.password, "1234");
+    }
+    #[test]
+    fn json_should_error_on_invalid_json() {
+        let request = Request {
+            body: b"{not json".to_vec(),
+            ..Request::new()
+        };
+        assert!(request.json::<Login>().is_err());
+    }
+    #[test]
+    fn should_return_utf8_string() {
+        let request = Request {
+            body: b"hello".to_vec(),
+            ..Request::new()
+        };
+        assert_eq!(request.text().expect("utf8"), "hello");
+    }
+    #[test]
+    fn should_deserialize_urlencoded() {
+        let request = Request {
+            body: b"email=user%40example.com&password=1234".to_vec(),
+            ..Request::new()
+        };
+        let form: Login = request.form().expect("valid form should deserialize");
+        assert_eq!(form.email, "user@example.com");
+        assert_eq!(form.password, "1234");
     }
 }

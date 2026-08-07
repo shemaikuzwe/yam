@@ -144,3 +144,27 @@ async fn should_handle_large_content_length() {
         .expect("Request to be parsed");
     assert_eq!(result.body.len(), 1000);
 }
+
+#[tokio::test]
+async fn should_parse_and_deserialize_json_body() {
+    #[derive(serde::Deserialize)]
+    struct Payload {
+        message: String,
+    }
+    let data = concat!(
+        "POST /api HTTP/1.1\r\n",
+        "Host: localhost\r\n",
+        "Content-Type: application/json\r\n",
+        "Content-Length: 19\r\n",
+        "\r\n",
+        r#"{"message":"hello"}"#,
+    );
+    let reader = ChunkReader::new(data, 5);
+    let mut request_reader = RequestReader::new(reader);
+    let request = request_reader
+        .handle_request()
+        .await
+        .expect("request should parse");
+    let payload: Payload = request.json().expect("json should deserialize");
+    assert_eq!(payload.message, "hello");
+}
