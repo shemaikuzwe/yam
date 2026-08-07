@@ -1,4 +1,4 @@
-use http_server::response::{Response, StatusCode};
+use yam_server::response::{Response, StatusCode};
 use serde::Serialize;
 #[derive(Serialize)]
 struct User {
@@ -9,9 +9,7 @@ struct User {
 async fn should_send_plain_text_response() {
     let mut output = Vec::new();
 
-    let mut response = Response::new(&mut output);
-
-    response
+    Response::new(&mut output)
         .status(StatusCode::StatusOk)
         .set("content-type", "text/plain")
         .send("Hello")
@@ -29,12 +27,11 @@ async fn should_send_plain_text_response() {
 #[tokio::test]
 async fn should_send_json_response() {
     let mut output = Vec::new();
-    let mut response = Response::new(&mut output);
     let user = User {
         name: "john doe".to_string(),
         email: "john@example.com".to_string(),
     };
-    response
+    Response::new(&mut output)
         .status(StatusCode::StatusOk)
         .set("content-type", "application/json")
         .json(&user)
@@ -47,26 +44,11 @@ async fn should_send_json_response() {
     assert!(response.contains("content-length: 46\r\n"));
     assert!(response.ends_with("\r\n\r\n{\"name\":\"john doe\",\"email\":\"john@example.com\"}"));
 }
-#[tokio::test]
-async fn prevent_sending_response_twice() {
-    let mut output = Vec::new();
-    let mut response = Response::new(&mut output);
-
-    response
-        .status(StatusCode::StatusOk)
-        .set("content-type", "text/plain")
-        .send("Hello")
-        .await
-        .expect("this should work");
-    response.send("hello").await.expect_err("sending responce twice");
-}
 
 #[tokio::test]
 async fn should_send_binary_body() {
     let mut output = Vec::new();
-    let mut response = Response::new(&mut output);
-
-    response
+    Response::new(&mut output)
         .set("content-type", "application/octet-stream")
         .send(vec![1, 2, 3, 4])
         .await
@@ -89,9 +71,7 @@ async fn should_send_binary_body() {
 #[tokio::test]
 async fn should_send_not_found_status() {
     let mut output = Vec::new();
-    let mut response = Response::new(&mut output);
-
-    response
+    Response::new(&mut output)
         .status(StatusCode::StatusNotFound)
         .send("Not found")
         .await

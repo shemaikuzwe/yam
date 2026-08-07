@@ -19,25 +19,23 @@ pub struct Response<W: AsyncWrite> {
     status: StatusCode,
     writer: W,
     headers: Headers,
-    sent: bool,
 }
 impl<W: AsyncWrite + Unpin> Response<W> {
     pub fn new(writer: W) -> Self {
-        let mut h = Headers::new();
-        h.set("connection", "close".to_string());
-        h.set("content-type", "text/plain".to_string());
+        let mut headers = Headers::new();
+        headers.set("connection", "close".to_string());
+        headers.set("content-type", "text/plain".to_string());
         Self {
             writer,
             status: StatusCode::StatusOk,
-            headers: h,
-            sent: false,
+            headers,
         }
     }
-    pub fn status(&mut self, status: StatusCode) -> &mut Self {
+    pub fn status(mut self, status: StatusCode) -> Self {
         self.status = status;
         self
     }
-    pub fn set(&mut self, key: &str, value: &str) -> &mut Self {
+    pub fn set(mut self, key: &str, value: &str) -> Self {
         self.headers.set(key, value.to_string());
         self
     }
@@ -55,60 +53,42 @@ impl<W: AsyncWrite + Unpin> Response<W> {
             .await?;
         Ok(())
     }
-    pub async fn send(&mut self, body: impl AsRef<[u8]>) -> io::Result<()> {
-        if self.sent {
-            return Err(io::Error::new(
-                io::ErrorKind::AlreadyExists,
-                "response already sent",
-            ));
-        }
+    pub async fn send(self, body: impl AsRef<[u8]>) -> io::Result<()> {
+        let mut this = self;
         let body = body.as_ref();
-        self.set("content-length", &body.len().to_string());
-        self.write_status_line().await?;
-        for (k, v) in self.headers.iter() {
-            self.writer
+        this.headers.set("content-length", body.len().to_string());
+        this.write_status_line().await?;
+        for (k, v) in this.headers.iter() {
+            this.writer
                 .write_all(format!("{k}: {v}\r\n").as_bytes())
                 .await?;
         }
-        self.writer.write_all(format!("\r\n").as_bytes()).await?;
-        self.writer.write_all(body).await?;
-        self.writer.flush().await?;
-        self.sent = true;
+        this.writer.write_all(b"\r\n").await?;
+        this.writer.write_all(body).await?;
+        this.writer.flush().await?;
         Ok(())
     }
-    pub async fn json<T: Serialize>(&mut self, body: &T) -> io::Result<()> {
+    pub async fn json(self, body: &impl Serialize) -> io::Result<()> {
         let body =
             serde_json::to_vec(body).map_err(|_| io::Error::new(InvalidData, "Invalid json"))?;
-        self.set("content-type", "application/json");
-        self.send(body).await?;
-        Ok(())
-    }
-    fn into_inner(self) -> W {
-        self.writer
+        self.set("content-type", "application/json").send(body).await
     }
 }
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[tokio::test]
-    async fn should_not_send_response_twice() {
-        let mut res = Response::new(Vec::new());
-        res.send("first").await.unwrap();
-        let result = res.send("second").await;
-        assert!(result.is_err());
-    }
 
     #[tokio::test]
     async fn should_send_complete_response() {
-        let mut res = Response::new(Vec::new());
-
-        res.status(StatusCode::StatusOk)
+        let mut output = Vec::new();
+        Response::new(&mut output)
+            .status(StatusCode::StatusOk)
             .set("content-type", "text/plain")
             .send("Hello")
             .await
             .unwrap();
 
-        let output = String::from_utf8(res.into_inner()).unwrap();
+        let output = String::from_utf8(output).unwrap();
 
         assert!(output.starts_with("HTTP/1.1 200 OK\r\n"));
         assert!(output.contains("content-type: text/plain\r\n"));
@@ -117,14 +97,12 @@ mod tests {
     }
     #[tokio::test]
     async fn should_send_binary_body() {
-        let mut res = Response::new(Vec::new());
-
-        res.set("content-type", "application/octet-stream")
+        let mut output = Vec::new();
+        Response::new(&mut output)
+            .set("content-type", "application/octet-stream")
             .send(vec![1, 2, 3, 4])
             .await
             .unwrap();
-
-        let output = res.into_inner();
 
         assert!(output.ends_with(&[1, 2, 3, 4]));
     }

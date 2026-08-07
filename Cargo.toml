@@ -13,3 +13,6 @@ members = [".","server", "router","client"]
 yam-server = { path = "server" }
 yam-router = { path = "router" }
 yam-client = { path = "client" }
+
+
+tokio = { version="1.52.3", features=["full"] }

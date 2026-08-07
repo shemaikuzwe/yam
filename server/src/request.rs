@@ -20,7 +20,6 @@ pub struct RequestLine {
     pub request_target: String,
     pub method: String,
 }
-
 #[derive(Debug, PartialEq)]
 enum ParseState {
     INIT,
@@ -134,11 +133,35 @@ pub enum RequestError {
     RequestTooLarge,
     UnexexpectedEndOfInput,
 }
+
+#[derive(Debug, Clone, Copy, Hash, Eq, PartialEq)]
+pub enum Method {
+    GET,
+    POST,
+    PATCH,
+    PUT,
+    DELETE,
+}
+
 pub struct RequestReader<R> {
     reader: R,
     buffer: [u8; 1024],
     buffer_index: usize,
 }
+
+impl From<&str> for Method {
+    fn from(value: &str) -> Self {
+        match value.to_uppercase().as_str() {
+            "GET" => Self::GET,
+            "POST" => Self::POST,
+            "PATCH" => Self::PATCH,
+            "PUT" => Self::PUT,
+            "DELETE" => Self::DELETE,
+            _ => Self::GET,
+        }
+    }
+}
+
 impl<R: AsyncRead + Unpin> RequestReader<R> {
     pub fn new(reader: R) -> Self {
         Self {

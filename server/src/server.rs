@@ -4,30 +4,23 @@ use tokio::net::{TcpListener, TcpStream};
 
 use crate::{
     request::{Request, RequestReader},
-    response::Response,
+    response::{Response, StatusCode},
 };
 
 pub struct Server;
 
-pub type HandlerFuture<'a> = Pin<Box<dyn Future<Output = io::Result<()>> + Send + 'a>>;
+pub type HandlerFuture = Pin<Box<dyn Future<Output = io::Result<()>> + Send>>;
 pub trait Handler: Send + Sync + 'static {
-    fn call<'a>(
-        &'a self,
-        req: &'a Request,
-        res: &'a mut Response<&'a mut TcpStream>,
-    ) -> HandlerFuture<'a>;
+    fn call(&self, req: Request, res: Response<TcpStream>) -> HandlerFuture;
 }
-impl<F> Handler for F
+impl<F, Fut> Handler for F
 where
     F: Send + Sync + 'static,
-    F: for<'a> Fn(&'a Request, &'a mut Response<&'a mut TcpStream>) -> HandlerFuture<'a>,
+    F: Fn(Request, Response<TcpStream>) -> Fut,
+    Fut: Future<Output = io::Result<()>> + Send + 'static,
 {
-    fn call<'a>(
-        &'a self,
-        req: &'a Request,
-        res: &'a mut Response<&'a mut TcpStream>,
-    ) -> HandlerFuture<'a> {
-        self(req, res)
+    fn call(&self, req: Request, res: Response<TcpStream>) -> HandlerFuture {
+        Box::pin(self(req, res))
     }
 }
 impl Server {
@@ -53,12 +46,22 @@ impl Server {
 pub async fn handle_request(mut stream: TcpStream, handler: Arc<dyn Handler>) -> io::Result<()> {
     let request = {
         let mut request_reader = RequestReader::new(&mut stream);
-        request_reader.handle_request().await.unwrap()
+        request_reader.handle_request().await
+    };
+    let request = match request {
+        Ok(req) => req,
+        Err(_) => {
+            let res = Response::new(stream);
+            res.status(StatusCode::StatusBadRequest)
+                .send("Bad request")
+                .await?;
+            return Ok(());
+        }
     };
 
-    let mut response = Response::new(&mut stream);
+    let response = Response::new(stream);
 
-    handler.call(&request, &mut response).await?;
+    handler.call(request, response).await?;
 
     Ok(())
 }

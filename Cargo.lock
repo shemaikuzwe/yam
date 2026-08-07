@@ -269,6 +269,7 @@ dependencies = [
 name = "yam"
 version = "0.1.0"
 dependencies = [
+ "tokio",
  "yam-client",
  "yam-router",
  "yam-server",
@@ -281,6 +282,10 @@ version = "0.1.0"
 [[package]]
 name = "yam-router"
 version = "0.1.0"
+dependencies = [
+ "tokio",
+ "yam-server",
+]
 
 [[package]]
 name = "yam-server"

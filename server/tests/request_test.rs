@@ -4,7 +4,7 @@ use std::{
     task::{Context, Poll},
 };
 
-use http_server::request::RequestReader;
+use yam_server::request::RequestReader;
 use tokio::io::{AsyncRead, ReadBuf};
 
 struct ChunkReader {
