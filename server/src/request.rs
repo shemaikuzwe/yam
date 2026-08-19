@@ -1,6 +1,8 @@
 use std::{
     cmp::min,
+    collections::HashMap,
     io::{self},
+    str::FromStr,
 };
 
 use serde::de::DeserializeOwned;
@@ -14,12 +16,14 @@ pub struct Request {
     pub request_line: Option<RequestLine>,
     pub headers: Headers,
     pub body: Vec<u8>,
+    path_params: HashMap<String, String>,
     parse_state: ParseState,
 }
 #[derive(Debug)]
 pub struct RequestLine {
     pub http_version: String,
     pub request_target: String,
+    pub query: String,
     pub method: String,
 }
 #[derive(Debug, PartialEq)]
@@ -53,6 +57,7 @@ impl Request {
             headers: Headers::new(),
             body: Vec::new(),
             parse_state: ParseState::INIT,
+            path_params: HashMap::new(),
             request_line: None,
         }
     }
@@ -152,6 +157,35 @@ impl Request {
     {
         serde_urlencoded::from_bytes(&self.body)
     }
+    pub fn query<T>(&self) -> Result<T, serde_urlencoded::de::Error>
+    where
+        T: DeserializeOwned,
+    {
+        let query = self
+            .request_line
+            .as_ref()
+            .map(|line| line.query.as_str())
+            .unwrap_or("");
+        serde_urlencoded::from_str(query)
+    }
+
+    pub fn param(&self, name: &str) -> Option<&str> {
+        self.path_params.get(name).map(String::as_str)
+    }
+    pub fn param_as<T>(&self, name: &str) -> Result<T, Error>
+    where
+        T: FromStr,
+    {
+        let value = self
+            .param(name)
+            .ok_or_else(|| ParamError::Missing(name.to_string()))?;
+        value
+            .parse::<T>()
+            .map_err(|_| ParamError::Invalid(name.to_string()).into())
+    }
+    pub fn set_params(&mut self, params: HashMap<String, String>) {
+        self.path_params = params
+    }
 }
 
 #[derive(Debug, Error)]
@@ -160,10 +194,19 @@ pub enum Error {
     Io(#[from] io::Error),
     #[error("parse error: {0}")]
     Parse(#[from] ParseError),
+    #[error("{0}")]
+    Param(#[from] ParamError),
     #[error("request too large")]
     RequestTooLarge,
     #[error("unexpected end of input")]
     UnexexpectedEndOfInput,
+}
+#[derive(Debug, Error, PartialEq)]
+pub enum ParamError {
+    #[error("missing param: {0}")]
+    Missing(String),
+    #[error("invalid typed param: {0}")]
+    Invalid(String),
 }
 
 #[derive(Debug, Clone, Copy, Hash, Eq, PartialEq)]
@@ -252,15 +295,20 @@ fn parse_request_line(data: &[u8]) -> Result<(RequestLine, usize), ParseError> {
     if protocol != b"HTTP" || version != b"1.1" || http_parts.next().is_some() {
         return Err(ParseError::UnsupportedHttpVersion);
     }
+    let request_target =
+        str::from_utf8(request_target).map_err(|_| ParseError::InvalidRequestLine)?;
+    let (request_target, query) = match request_target.split_once('?') {
+        Some((path, query)) => (path, query),
+        None => (request_target, ""),
+    };
 
     Ok((
         RequestLine {
-            method: std::str::from_utf8(method)
+            method: str::from_utf8(method)
                 .map_err(|_| ParseError::InvalidRequestLine)?
                 .to_string(),
-            request_target: str::from_utf8(request_target)
-                .map_err(|_| ParseError::InvalidRequestLine)?
-                .to_string(),
+            request_target: request_target.to_string(),
+            query: query.to_string(),
             http_version: str::from_utf8(version)
                 .map_err(|_| ParseError::InvalidRequestLine)?
                 .to_string(),
@@ -271,7 +319,7 @@ fn parse_request_line(data: &[u8]) -> Result<(RequestLine, usize), ParseError> {
 
 #[cfg(test)]
 mod tests {
-    use std::assert_eq;
+    use std::{assert_eq, matches};
 
     use serde::Deserialize;
 
@@ -303,7 +351,8 @@ mod tests {
         let result = parse_request_line(b"GET /search?q=rust HTTP/1.1\r\n")
             .expect("Query params should be parsed successfully");
         let request_line = result.0;
-        assert_eq!(request_line.request_target, "/search?q=rust")
+        assert_eq!(request_line.request_target, "/search");
+        assert_eq!(request_line.query, "q=rust");
     }
     #[test]
     fn should_fail_parse_unsupported_http_version() {
@@ -329,6 +378,7 @@ mod tests {
     #[test]
     fn should_desirialize_valid_json() {
         let request = Request {
+            path_params: HashMap::new(),
             request_line: None,
             headers: Headers::new(),
             body: br#"{"email":"user@example.com","password":"1234"}"#.to_vec(),
@@ -363,5 +413,121 @@ mod tests {
         let form: Login = request.form_data().expect("valid form should deserialize");
         assert_eq!(form.email, "user@example.com");
         assert_eq!(form.password, "1234");
+    }
+    #[test]
+    fn should_deserialize_query_params() {
+        #[derive(Deserialize, Debug, PartialEq)]
+        struct Pagination {
+            page: Option<u64>,
+            per_page: Option<u64>,
+        }
+        let mut request = Request::new();
+        request.request_line = Some(RequestLine {
+            http_version: "1.1".into(),
+            request_target: "/list".into(),
+            query: "page=2&per_page=30".into(),
+            method: "GET".into(),
+        });
+        let pagination: Pagination = request.query().expect("valid query should deserialize");
+        assert_eq!(
+            pagination,
+            Pagination {
+                page: Some(2),
+                per_page: Some(30),
+            }
+        );
+    }
+    #[test]
+    fn should_deserialize_missing_query_to_defaults() {
+        #[derive(Deserialize, Debug, PartialEq)]
+        struct Pagination {
+            page: Option<u64>,
+            per_page: Option<u64>,
+        }
+        let mut request = Request::new();
+        request.request_line = Some(RequestLine {
+            http_version: "1.1".into(),
+            request_target: "/list".into(),
+            query: "".into(),
+            method: "GET".into(),
+        });
+        let pagination: Pagination = request.query().expect("empty query should deserialize");
+        assert_eq!(
+            pagination,
+            Pagination {
+                page: None,
+                per_page: None,
+            }
+        );
+    }
+    #[test]
+    fn query_should_error_on_invalid_query() {
+        #[derive(Deserialize)]
+        struct Pagination {
+            page: u64,
+        }
+        let mut request = Request::new();
+        request.request_line = Some(RequestLine {
+            http_version: "1.1".into(),
+            request_target: "/list".into(),
+            query: "page=hi".into(),
+            method: "GET".into(),
+        });
+        assert!(request.query::<Pagination>().is_err());
+    }
+    #[test]
+    fn query_should_percent_decode() {
+        #[derive(Deserialize, Debug, PartialEq)]
+        struct Search {
+            q: String,
+        }
+        let mut request = Request::new();
+        request.request_line = Some(RequestLine {
+            http_version: "1.1".into(),
+            request_target: "/search".into(),
+            query: "q=hello%20world".into(),
+            method: "GET".into(),
+        });
+        let search: Search = request
+            .query()
+            .expect("percent encoded query should deserialize");
+        assert_eq!(search.q, "hello world");
+    }
+    #[test]
+    fn should_return_param() {
+        let mut request = Request::new();
+        request.set_params(HashMap::from([("year".to_string(), "2026".to_string())]));
+        assert_eq!(request.param("year"), Some("2026"));
+        assert_eq!(request.param("none"), None);
+    }
+    #[test]
+    fn should_parse_type_param() {
+        let mut request = Request::new();
+        request.set_params(HashMap::from([("year".to_string(), "2026".to_string())]));
+        assert!(matches!(request.param_as::<u64>("year"), Ok(2026)));
+    }
+    #[test]
+    fn should_error_for_invalid_typed_path_param() {
+        let mut request = Request::new();
+
+        request.set_params(HashMap::from([(
+            "id".to_string(),
+            "not-a-number".to_string(),
+        )]));
+
+        assert!(matches!(
+           request.param_as::<u64>("id"),
+           Err(Error::Param(ParamError::Invalid(name))) if name == "id"
+            ));
+    }
+
+    #[test]
+    fn should_error_for_missing_typed_path_param() {
+        let request = Request::new();
+        
+        assert!(matches!(
+                request.param_as::<u64>("id"),
+                Err(Error::Param(ParamError::Missing(name))) if name == "id"
+            ));
     }
 }

@@ -56,6 +56,15 @@ pub trait IntoResponse {
     fn into_response(self) -> Response;
 }
 
+impl<R: IntoResponse> IntoResponse for Result<R, HttpError> {
+    fn into_response(self) -> Response {
+        match self {
+            Ok(r) => r.into_response(),
+            Err(e) => e.into_response(),
+        }
+    }
+}
+
 impl IntoResponse for Response {
     fn into_response(self) -> Response {
         self

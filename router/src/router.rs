@@ -2,12 +2,13 @@ use std::{collections::HashMap, future::Future, io, sync::Arc};
 
 use tokio::net::TcpListener;
 use yam_server::{
-    request::Method, response::HttpError, response::IntoResponse, Handler, HandlerFuture, Request,
-    Response, Server, StatusCode,
+    request::Method, response::IntoResponse, Handler, HandlerFuture, Request, Response, Server,
+    StatusCode,
 };
+use matchit::Router as MatchRouter;
 
 pub struct Router {
-    routes: HashMap<(Method, String), Arc<dyn Handler>>,
+    routes: HashMap<Method,MatchRouter<Arc<dyn Handler>>>,
 }
 
 macro_rules! route_verb {
@@ -17,7 +18,7 @@ macro_rules! route_verb {
         where
             R: IntoResponse + Send + 'static,
             F: Fn(Request) -> Fut + Send + Sync + 'static,
-            Fut: Future<Output = Result<R, HttpError>> + Send + 'static,
+            Fut: Future<Output = R> + Send + 'static,
         {
             self.add_route(Method::$method, path, handler);
         }
@@ -37,8 +38,9 @@ impl Router {
     route_verb!(delete => DELETE);
 
     fn add_route<H: Handler>(&mut self, method: Method, path: &str, handler: H) {
-        self.routes
-            .insert((method, path.to_string()), Arc::new(handler));
+        self.routes.entry(method).or_default().insert(path, Arc::new(handler)).unwrap_or_else(|err|{
+            panic!("Failed to register route: {err}")
+        })
     }
     pub async fn serve(self, listener: TcpListener) -> io::Result<()> {
         Server::serve(listener, self).await
@@ -46,7 +48,7 @@ impl Router {
 }
 
 impl Handler for Router {
-    fn call(&self, req: Request) -> HandlerFuture {
+    fn call(&self,mut req: Request) -> HandlerFuture {
         let Some(request_line) = &req.request_line else {
             return Box::pin(async move {
                 Ok(Response::new()
@@ -55,16 +57,22 @@ impl Handler for Router {
             });
         };
         let method = Method::from(request_line.method.as_str());
-        match self
-            .routes
-            .get(&(method, request_line.request_target.clone()))
+        let matched_route=self.routes.get(&method).and_then(|router|router.at(&request_line.request_target).ok());
+        let (handler,params) =match matched_route
         {
-            Some(handler) => handler.call(req),
-            None => Box::pin(async move {
+            Some(matched) => {
+                let handler=Arc::clone(matched.value);
+                let params=matched.params.iter().map(|(name,value)|(name.to_string(),value.to_string())).collect::<HashMap<_,_>>();
+                (handler,params)
+            },
+            None =>return Box::pin(async move {
                 Ok(Response::new()
                     .status(StatusCode::StatusNotFound)
                     .send("Not Found"))
             }),
-        }
+        };
+        req.set_params(params);
+        handler.call(req)
     }
+    
 }

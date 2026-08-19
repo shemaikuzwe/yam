@@ -17,12 +17,12 @@ impl<F, Fut, R> Handler for F
 where
     F: Send + Sync + 'static,
     F: Fn(Request) -> Fut,
-    Fut: Future<Output = Result<R, HttpError>> + Send + 'static,
-    R: crate::response::IntoResponse + Send + 'static,
+    Fut: Future<Output = R> + Send + 'static,
+    R: IntoResponse + Send + 'static,
 {
     fn call(&self, req: Request) -> HandlerFuture {
         let fut = self(req);
-        Box::pin(async move { fut.await.map(IntoResponse::into_response) })
+        Box::pin(async move { Ok(fut.await.into_response()) })
     }
 }
 impl Server {
