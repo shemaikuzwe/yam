@@ -1,10 +1,27 @@
 use std::{collections::HashMap, future::Future, io, sync::Arc};
 
-use tokio::net::{TcpListener, TcpStream};
-use yam_server::{Handler, HandlerFuture, Request, Response, Server, StatusCode, request::Method};
+use tokio::net::TcpListener;
+use yam_server::{
+    request::Method, response::HttpError, response::IntoResponse, Handler, HandlerFuture, Request,
+    Response, Server, StatusCode,
+};
 
 pub struct Router {
     routes: HashMap<(Method, String), Arc<dyn Handler>>,
+}
+
+macro_rules! route_verb {
+    ($(#[$docs:meta])* $name:ident => $method:ident) => {
+        $(#[$docs])*
+        pub fn $name<R, F, Fut>(&mut self, path: &str, handler: F)
+        where
+            R: IntoResponse + Send + 'static,
+            F: Fn(Request) -> Fut + Send + Sync + 'static,
+            Fut: Future<Output = Result<R, HttpError>> + Send + 'static,
+        {
+            self.add_route(Method::$method, path, handler);
+        }
+    };
 }
 
 impl Router {
@@ -13,51 +30,11 @@ impl Router {
             routes: HashMap::new(),
         }
     }
-    pub fn get<T>(
-        &mut self,
-        path: &str,
-        handler: impl Fn(Request, Response<TcpStream>) -> T + Send + Sync + 'static,
-    ) where
-        T: Future<Output = io::Result<()>> + Send + 'static,
-    {
-        self.add_route(Method::GET, path, handler);
-    }
-    pub fn post<T>(
-        &mut self,
-        path: &str,
-        handler: impl Fn(Request, Response<TcpStream>) -> T + Send + Sync + 'static,
-    ) where
-        T: Future<Output = io::Result<()>> + Send + 'static,
-    {
-        self.add_route(Method::POST, path, handler);
-    }
-    pub fn put<T>(
-        &mut self,
-        path: &str,
-        handler: impl Fn(Request, Response<TcpStream>) -> T + Send + Sync + 'static,
-    ) where
-        T: Future<Output = io::Result<()>> + Send + 'static,
-    {
-        self.add_route(Method::PUT, path, handler);
-    }
-    pub fn patch<T>(
-        &mut self,
-        path: &str,
-        handler: impl Fn(Request, Response<TcpStream>) -> T + Send + Sync + 'static,
-    ) where
-        T: Future<Output = io::Result<()>> + Send + 'static,
-    {
-        self.add_route(Method::PATCH, path, handler);
-    }
-    pub fn delete<T>(
-        &mut self,
-        path: &str,
-        handler: impl Fn(Request, Response<TcpStream>) -> T + Send + Sync + 'static,
-    ) where
-        T: Future<Output = io::Result<()>> + Send + 'static,
-    {
-        self.add_route(Method::DELETE, path, handler);
-    }
+    route_verb!(get => GET);
+    route_verb!(post => POST);
+    route_verb!(put => PUT);
+    route_verb!(patch => PATCH);
+    route_verb!(delete => DELETE);
 
     fn add_route<H: Handler>(&mut self, method: Method, path: &str, handler: H) {
         self.routes
@@ -69,12 +46,12 @@ impl Router {
 }
 
 impl Handler for Router {
-    fn call(&self, req: Request, res: Response<TcpStream>) -> HandlerFuture {
+    fn call(&self, req: Request) -> HandlerFuture {
         let Some(request_line) = &req.request_line else {
             return Box::pin(async move {
-                res.status(StatusCode::StatusBadRequest)
-                    .send("Bad request")
-                    .await
+                Ok(Response::new()
+                    .status(StatusCode::StatusBadRequest)
+                    .send("Bad request"))
             });
         };
         let method = Method::from(request_line.method.as_str());
@@ -82,11 +59,11 @@ impl Handler for Router {
             .routes
             .get(&(method, request_line.request_target.clone()))
         {
-            Some(handler) => handler.call(req, res),
+            Some(handler) => handler.call(req),
             None => Box::pin(async move {
-                res.status(StatusCode::StatusNotFound)
-                    .send("Not Found")
-                    .await
+                Ok(Response::new()
+                    .status(StatusCode::StatusNotFound)
+                    .send("Not Found"))
             }),
         }
     }

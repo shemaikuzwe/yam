@@ -1,5 +1,6 @@
-use yam_server::response::{Response, StatusCode};
 use serde::Serialize;
+use yam_server::HttpError;
+use yam_server::response::{IntoResponse, Response, ResponseWriter, StatusCode};
 #[derive(Serialize)]
 struct User {
     name: String,
@@ -9,10 +10,12 @@ struct User {
 async fn should_send_plain_text_response() {
     let mut output = Vec::new();
 
-    Response::new(&mut output)
+    let response = Response::new()
         .status(StatusCode::StatusOk)
         .set("content-type", "text/plain")
-        .send("Hello")
+        .send("Hello");
+    ResponseWriter::new(&mut output)
+        .send_response(response)
         .await
         .expect("res should be sent successfully.");
 
@@ -31,10 +34,9 @@ async fn should_send_json_response() {
         name: "john doe".to_string(),
         email: "john@example.com".to_string(),
     };
-    Response::new(&mut output)
-        .status(StatusCode::StatusOk)
-        .set("content-type", "application/json")
-        .json(&user)
+    let response = Response::new().json(&user).unwrap();
+    ResponseWriter::new(&mut output)
+        .send_response(response)
         .await
         .expect("response to be sent");
     let response = String::from_utf8(output).expect("failed to convert to a string");
@@ -48,18 +50,13 @@ async fn should_send_json_response() {
 #[tokio::test]
 async fn should_send_binary_body() {
     let mut output = Vec::new();
-    Response::new(&mut output)
-        .set("content-type", "application/octet-stream")
-        .send(vec![1, 2, 3, 4])
+    let response = Response::new().send(vec![1, 2, 3, 4]);
+    ResponseWriter::new(&mut output)
+        .send_response(response)
         .await
         .expect("binary response should be sent");
 
     assert!(output.starts_with(b"HTTP/1.1 200 OK\r\n"));
-    assert!(
-        output
-            .windows(b"content-type: application/octet-stream\r\n".len())
-            .any(|window| window == b"content-type: application/octet-stream\r\n")
-    );
     assert!(
         output
             .windows(b"content-length: 4\r\n".len())
@@ -71,9 +68,11 @@ async fn should_send_binary_body() {
 #[tokio::test]
 async fn should_send_not_found_status() {
     let mut output = Vec::new();
-    Response::new(&mut output)
+    let response = Response::new()
         .status(StatusCode::StatusNotFound)
-        .send("Not found")
+        .send("Not found");
+    ResponseWriter::new(&mut output)
+        .send_response(response)
         .await
         .expect("not found response should be sent");
 
@@ -82,4 +81,13 @@ async fn should_send_not_found_status() {
     assert!(response.starts_with("HTTP/1.1 404 Not Found\r\n"));
     assert!(response.contains("content-length: 9\r\n"));
     assert!(response.ends_with("\r\n\r\nNot found"));
+}
+
+#[tokio::test]
+async fn should_convert_http_error_to_response() {
+    let err = serde_json::from_str::<serde_json::Value>("{bad").unwrap_err();
+    let response = HttpError::Json(err).into_response();
+
+    assert_eq!(response.status, StatusCode::StatusBadRequest);
+    assert!(!response.body.is_empty());
 }

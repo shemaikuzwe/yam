@@ -4,6 +4,7 @@ use std::{
 };
 
 use serde::de::DeserializeOwned;
+use thiserror::Error;
 use tokio::io::{AsyncRead, AsyncReadExt};
 
 use crate::headers::Headers;
@@ -28,15 +29,21 @@ enum ParseState {
     BODY,
     DONE,
 }
-
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Error)]
 pub enum ParseError {
+    #[error("incomplete request line")]
     IncompleteRequestLine,
+    #[error("invalid request line")]
     InvalidRequestLine,
+    #[error("unsupported http version")]
     UnsupportedHttpVersion,
+    #[error("incomplete field line")]
     IncompleteFieldLine,
+    #[error("invalid field line")]
     InvalidFieldLine,
+    #[error("invalid header key")]
     InvalidHeaderKey,
+    #[error("invalid content-length header")]
     InvalidContentLengthHeader,
 }
 const SEPARATOR: &[u8] = b"\r\n";
@@ -139,7 +146,7 @@ impl Request {
     pub fn text(&self) -> Result<&str, std::str::Utf8Error> {
         std::str::from_utf8(&self.body)
     }
-    pub fn form<T>(&self) -> Result<T, serde_urlencoded::de::Error>
+    pub fn form_data<T>(&self) -> Result<T, serde_urlencoded::de::Error>
     where
         T: DeserializeOwned,
     {
@@ -147,11 +154,15 @@ impl Request {
     }
 }
 
-#[derive(Debug)]
-pub enum RequestError {
-    Io(io::Error),
-    Parse(ParseError),
+#[derive(Debug, Error)]
+pub enum Error {
+    #[error("io error: {0}")]
+    Io(#[from] io::Error),
+    #[error("parse error: {0}")]
+    Parse(#[from] ParseError),
+    #[error("request too large")]
     RequestTooLarge,
+    #[error("unexpected end of input")]
     UnexexpectedEndOfInput,
 }
 
@@ -191,24 +202,24 @@ impl<R: AsyncRead + Unpin> RequestReader<R> {
             buffer_index: 0,
         }
     }
-    pub async fn handle_request(&mut self) -> Result<Request, RequestError> {
+    pub async fn handle_request(&mut self) -> Result<Request, Error> {
         let mut request = Request::new();
         while !request.done() {
             if self.buffer_index == self.buffer.len() {
-                return Err(RequestError::RequestTooLarge);
+                return Err(Error::RequestTooLarge);
             }
             let bytes_read = self
                 .reader
                 .read(&mut self.buffer[self.buffer_index..])
                 .await
-                .map_err(RequestError::Io)?;
+                .map_err(Error::Io)?;
             if bytes_read == 0 {
-                return Err(RequestError::UnexexpectedEndOfInput);
+                return Err(Error::UnexexpectedEndOfInput);
             }
             self.buffer_index += bytes_read;
             let read = request
                 .parse(&self.buffer[..self.buffer_index])
-                .map_err(RequestError::Parse)?;
+                .map_err(Error::Parse)?;
             self.buffer.copy_within(read..self.buffer_index, 0);
             self.buffer_index -= read
         }
@@ -349,7 +360,7 @@ mod tests {
             body: b"email=user%40example.com&password=1234".to_vec(),
             ..Request::new()
         };
-        let form: Login = request.form().expect("valid form should deserialize");
+        let form: Login = request.form_data().expect("valid form should deserialize");
         assert_eq!(form.email, "user@example.com");
         assert_eq!(form.password, "1234");
     }

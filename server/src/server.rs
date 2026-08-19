@@ -4,23 +4,25 @@ use tokio::net::{TcpListener, TcpStream};
 
 use crate::{
     request::{Request, RequestReader},
-    response::{Response, StatusCode},
+    response::{HttpError, IntoResponse, Response, ResponseWriter},
 };
 
 pub struct Server;
 
-pub type HandlerFuture = Pin<Box<dyn Future<Output = io::Result<()>> + Send>>;
+pub type HandlerFuture = Pin<Box<dyn Future<Output = Result<Response, HttpError>> + Send>>;
 pub trait Handler: Send + Sync + 'static {
-    fn call(&self, req: Request, res: Response<TcpStream>) -> HandlerFuture;
+    fn call(&self, req: Request) -> HandlerFuture;
 }
-impl<F, Fut> Handler for F
+impl<F, Fut, R> Handler for F
 where
     F: Send + Sync + 'static,
-    F: Fn(Request, Response<TcpStream>) -> Fut,
-    Fut: Future<Output = io::Result<()>> + Send + 'static,
+    F: Fn(Request) -> Fut,
+    Fut: Future<Output = Result<R, HttpError>> + Send + 'static,
+    R: crate::response::IntoResponse + Send + 'static,
 {
-    fn call(&self, req: Request, res: Response<TcpStream>) -> HandlerFuture {
-        Box::pin(self(req, res))
+    fn call(&self, req: Request) -> HandlerFuture {
+        let fut = self(req);
+        Box::pin(async move { fut.await.map(IntoResponse::into_response) })
     }
 }
 impl Server {
@@ -34,11 +36,7 @@ impl Server {
 
             let handler = Arc::clone(&handler);
 
-            tokio::spawn(async move {
-                if let Err(err) = handle_request(stream, handler).await {
-                    eprintln!("Connection failed: {err}");
-                }
-            });
+            tokio::spawn(async move { handle_request(stream, handler).await });
         }
     }
 }
@@ -50,18 +48,19 @@ pub async fn handle_request(mut stream: TcpStream, handler: Arc<dyn Handler>) ->
     };
     let request = match request {
         Ok(req) => req,
-        Err(_) => {
-            let res = Response::new(stream);
-            res.status(StatusCode::StatusBadRequest)
-                .send("Bad request")
-                .await?;
+        Err(err) => {
+            let response = HttpError::from(err).into_response();
+            ResponseWriter::new(stream).send_response(response).await?;
             return Ok(());
         }
     };
 
-    let response = Response::new(stream);
+    let response = match handler.call(request).await {
+        Ok(response) => response,
+        Err(err) => err.into_response(),
+    };
 
-    handler.call(request, response).await?;
+    ResponseWriter::new(stream).send_response(response).await?;
 
     Ok(())
 }
