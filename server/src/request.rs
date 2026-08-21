@@ -200,6 +200,8 @@ pub enum Error {
     RequestTooLarge,
     #[error("unexpected end of input")]
     UnexexpectedEndOfInput,
+    #[error("method not allowed")]
+    MethodNotAllowed,
 }
 #[derive(Debug, Error, PartialEq)]
 pub enum ParamError {
@@ -224,15 +226,16 @@ pub struct RequestReader<R> {
     buffer_index: usize,
 }
 
-impl From<&str> for Method {
-    fn from(value: &str) -> Self {
+impl TryFrom<&str> for Method {
+    type Error = Error;
+    fn try_from(value: &str) -> Result<Self, Self::Error> {
         match value.to_uppercase().as_str() {
-            "GET" => Self::GET,
-            "POST" => Self::POST,
-            "PATCH" => Self::PATCH,
-            "PUT" => Self::PUT,
-            "DELETE" => Self::DELETE,
-            _ => Self::GET,
+            "GET" => Ok(Self::GET),
+            "POST" => Ok(Self::POST),
+            "PATCH" => Ok(Self::PATCH),
+            "PUT" => Ok(Self::PUT),
+            "DELETE" => Ok(Self::DELETE),
+            _ => Err(Error::MethodNotAllowed),
         }
     }
 }
@@ -516,18 +519,18 @@ mod tests {
         )]));
 
         assert!(matches!(
-           request.param_as::<u64>("id"),
-           Err(Error::Param(ParamError::Invalid(name))) if name == "id"
-            ));
+        request.param_as::<u64>("id"),
+        Err(Error::Param(ParamError::Invalid(name))) if name == "id"
+         ));
     }
 
     #[test]
     fn should_error_for_missing_typed_path_param() {
         let request = Request::new();
-        
+
         assert!(matches!(
-                request.param_as::<u64>("id"),
-                Err(Error::Param(ParamError::Missing(name))) if name == "id"
-            ));
+            request.param_as::<u64>("id"),
+            Err(Error::Param(ParamError::Missing(name))) if name == "id"
+        ));
     }
 }

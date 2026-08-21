@@ -4,8 +4,8 @@ use std::{
     task::{Context, Poll},
 };
 
-use yam_server::request::RequestReader;
 use tokio::io::{AsyncRead, ReadBuf};
+use yam_server::request::RequestReader;
 
 struct ChunkReader {
     data: Vec<u8>,

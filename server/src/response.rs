@@ -13,6 +13,7 @@ pub enum StatusCode {
     StatusUnauthorized = 401,
     StatusForbidden = 403,
     StatusNotFound = 404,
+    StatusMethodNotAllowed = 405,
     StatusInternalServerError = 500,
 }
 
@@ -107,6 +108,7 @@ impl<W: AsyncWrite + Unpin> ResponseWriter<W> {
             StatusCode::StatusUnauthorized => (401, "Unauthorized"),
             StatusCode::StatusForbidden => (403, "Forbidden"),
             StatusCode::StatusNotFound => (404, "Not Found"),
+            StatusCode::StatusMethodNotAllowed => (405, "Method Not Allowed"),
             StatusCode::StatusInternalServerError => (500, "Internal Server Error"),
         };
         self.writer
@@ -149,7 +151,7 @@ impl<W: AsyncWrite + Unpin> ResponseWriter<W> {
 pub enum HttpError {
     #[error("Request error: {0}")]
     Request(#[from] request::Error),
-    
+
     #[error("I/O error: {0}")]
     Io(#[from] io::Error),
 
