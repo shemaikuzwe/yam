@@ -9,6 +9,7 @@ use yam_server::{
 
 pub struct Router {
     routes: HashMap<Method, MatchRouter<Arc<dyn Handler>>>,
+    trailing_slash: bool,
 }
 
 macro_rules! route_verb {
@@ -26,9 +27,11 @@ macro_rules! route_verb {
 }
 
 impl Router {
-    pub fn new() -> Router {
+    // TODO: use config if there is new parameter
+    pub fn new(strict_traing_slash: Option<bool>) -> Router {
         Router {
             routes: HashMap::new(),
+            trailing_slash: strict_traing_slash.unwrap_or(false),
         }
     }
     route_verb!(get => GET);
@@ -38,6 +41,7 @@ impl Router {
     route_verb!(delete => DELETE);
 
     fn add_route<H: Handler>(&mut self, method: Method, path: &str, handler: H) {
+        let path = self.normalize_path(path);
         self.routes
             .entry(method)
             .or_default()
@@ -46,6 +50,14 @@ impl Router {
     }
     pub async fn serve(self, listener: TcpListener) -> io::Result<()> {
         Server::serve(listener, self).await
+    }
+
+    fn normalize_path<'a>(&self, path: &'a str) -> &'a str {
+        if self.trailing_slash || path == "/" {
+            path
+        } else {
+            path.trim_end_matches("/")
+        }
     }
 }
 
@@ -58,6 +70,7 @@ impl Handler for Router {
                     .send("Bad request"))
             });
         };
+        let path = self.normalize_path(&request_line.request_target);
         let method = match Method::try_from(request_line.method.as_str()) {
             Ok(method) => method,
             Err(_) => {
@@ -71,7 +84,7 @@ impl Handler for Router {
         let matched_route = self
             .routes
             .get(&method)
-            .and_then(|router| router.at(&request_line.request_target).ok());
+            .and_then(|router| router.at(path).ok());
         let (handler, params) = match matched_route {
             Some(matched) => {
                 let handler = Arc::clone(matched.value);
@@ -83,10 +96,7 @@ impl Handler for Router {
                 (handler, params)
             }
             None => {
-                let path_exists = self
-                    .routes
-                    .values()
-                    .any(|route| route.at(&request_line.request_target).is_ok());
+                let path_exists = self.routes.values().any(|route| route.at(path).is_ok());
                 let (status, message) = match path_exists {
                     true => (StatusCode::StatusMethodNotAllowed, "Method not allowed"),
                     false => (StatusCode::StatusNotFound, "Not Found"),

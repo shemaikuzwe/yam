@@ -18,7 +18,7 @@ struct Pagination {
 
 #[tokio::main]
 async fn main() {
-    let mut app = Router::new();
+    let mut app = Router::new(Some(true));
     app.get("/", async |_req| Response::new().send("shsh"));
     app.get("/users", async |req| {
         let pagination: Pagination = req.query()?;
@@ -26,7 +26,7 @@ async fn main() {
         let per_page = pagination.per_page.unwrap_or(10);
         Ok(json!({ "page": page, "per_page": per_page }))
     });
-    app.post("/users", async |req| {
+    app.post("/users/", async |req| {
         let data: LoginPaylod = req.json()?;
         let name = data.email.split('@').next();
         let user = json!({
