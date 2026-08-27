@@ -1,4 +1,4 @@
-use std::{collections::HashMap, future::Future, io, sync::Arc};
+use std::{collections::HashMap, format, future::Future, io, sync::Arc};
 
 use matchit::Router as MatchRouter;
 use tokio::net::TcpListener;
@@ -13,6 +13,13 @@ pub struct Router {
     routes: HashMap<Method, MatchRouter<Arc<dyn Handler>>>,
     middlewares: Vec<Arc<dyn Middleware>>,
     trailing_slash: bool,
+    route_prefix: String,
+}
+
+#[derive(Default)]
+pub struct RouterConfig {
+    pub strict_trailing_slash: bool,
+    pub route_prefix: String,
 }
 
 macro_rules! route_verb {
@@ -30,12 +37,12 @@ macro_rules! route_verb {
 }
 
 impl Router {
-    //TODO: use config if there is new parameter
-    pub fn new(strict_trailing_slash: Option<bool>) -> Router {
+    pub fn new(config: RouterConfig) -> Router {
         Router {
             routes: HashMap::new(),
             middlewares: Vec::new(),
-            trailing_slash: strict_trailing_slash.unwrap_or(false),
+            trailing_slash: config.strict_trailing_slash,
+            route_prefix: config.route_prefix,
         }
     }
     route_verb!(get => GET);
@@ -50,7 +57,8 @@ impl Router {
         self.middlewares.push(Arc::new(middleware));
     }
     fn add_route<H: Handler>(&mut self, method: Method, path: &str, handler: H) {
-        let path = self.normalize_path(path);
+        let path = format!("{}{path}", self.route_prefix);
+        let path = self.normalize_path(&path);
         self.routes
             .entry(method)
             .or_default()

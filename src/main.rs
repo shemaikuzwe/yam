@@ -3,7 +3,10 @@ use std::println;
 use serde::Deserialize;
 use serde_json::json;
 use tokio::net::TcpListener;
-use yam_router::{Next, router::Router};
+use yam_router::{
+    Next,
+    router::{Router, RouterConfig},
+};
 use yam_server::{Request, Response};
 
 #[derive(Deserialize)]
@@ -20,15 +23,18 @@ struct Pagination {
 
 #[tokio::main]
 async fn main() {
-    let mut app = Router::new(Some(false));
-    
+    let mut app = Router::new(RouterConfig {
+        route_prefix: "/api/v1".into(),
+        ..Default::default()
+    });
+
     app.middleware(async |req: Request, next: Next| {
         println!("middleware: before");
         let response = next.run(req).await?;
         println!("middleware: after");
         Ok(response)
     });
-    
+
     app.get("/", async |_req| Response::new().send("shsh"));
     app.get("/users", async |req| {
         let pagination: Pagination = req.query()?;
