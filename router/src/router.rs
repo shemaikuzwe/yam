@@ -7,8 +7,11 @@ use yam_server::{
     response::IntoResponse,
 };
 
+use crate::middleware::{Middleware, Next};
+
 pub struct Router {
     routes: HashMap<Method, MatchRouter<Arc<dyn Handler>>>,
+    middlewares: Vec<Arc<dyn Middleware>>,
     trailing_slash: bool,
 }
 
@@ -27,11 +30,12 @@ macro_rules! route_verb {
 }
 
 impl Router {
-    // TODO: use config if there is new parameter
-    pub fn new(strict_traing_slash: Option<bool>) -> Router {
+    //TODO: use config if there is new parameter
+    pub fn new(strict_trailing_slash: Option<bool>) -> Router {
         Router {
             routes: HashMap::new(),
-            trailing_slash: strict_traing_slash.unwrap_or(false),
+            middlewares: Vec::new(),
+            trailing_slash: strict_trailing_slash.unwrap_or(false),
         }
     }
     route_verb!(get => GET);
@@ -39,7 +43,12 @@ impl Router {
     route_verb!(put => PUT);
     route_verb!(patch => PATCH);
     route_verb!(delete => DELETE);
-
+    pub fn middleware<M>(&mut self, middleware: M)
+    where
+        M: Middleware,
+    {
+        self.middlewares.push(Arc::new(middleware));
+    }
     fn add_route<H: Handler>(&mut self, method: Method, path: &str, handler: H) {
         let path = self.normalize_path(path);
         self.routes
@@ -105,6 +114,6 @@ impl Handler for Router {
             }
         };
         req.set_params(params);
-        handler.call(req)
+        Next::new(self.middlewares.clone(), handler).run(req)
     }
 }

@@ -1,8 +1,10 @@
+use std::println;
+
 use serde::Deserialize;
 use serde_json::json;
 use tokio::net::TcpListener;
-use yam_router::router::Router;
-use yam_server::Response;
+use yam_router::{Next, router::Router};
+use yam_server::{Request, Response};
 
 #[derive(Deserialize)]
 struct LoginPaylod {
@@ -18,7 +20,15 @@ struct Pagination {
 
 #[tokio::main]
 async fn main() {
-    let mut app = Router::new(Some(true));
+    let mut app = Router::new(Some(false));
+    
+    app.middleware(async |req: Request, next: Next| {
+        println!("middleware: before");
+        let response = next.run(req).await?;
+        println!("middleware: after");
+        Ok(response)
+    });
+    
     app.get("/", async |_req| Response::new().send("shsh"));
     app.get("/users", async |req| {
         let pagination: Pagination = req.query()?;
