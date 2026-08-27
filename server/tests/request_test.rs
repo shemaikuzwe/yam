@@ -62,13 +62,12 @@ async fn test_full_request() {
         .handle_request()
         .await
         .expect("request should parse successfully");
-    let request_line = request.request_line.expect("Should have a request line");
     let host = request
         .headers
         .get("host")
         .expect("Should have host header");
-    assert_eq!(request_line.method, "POST");
-    assert_eq!(request_line.request_target, "/submit");
+    assert_eq!(request.method(), Some("POST"));
+    assert_eq!(request.path(), Some("/submit"));
     assert_eq!(host, "localhost:42069");
     assert_eq!(request.body, b"hello world!\n");
 }
@@ -93,13 +92,10 @@ async fn multiple_request_in_stream() {
         .handle_request()
         .await
         .expect("Should parse request 2");
-    let request_line = request1.request_line.expect("Should have a request line");
-    assert_eq!(request_line.method, "GET");
-    assert_eq!(request_line.request_target, "/");
-    let request_line2 = request2.request_line.expect("Should have request line");
-
-    assert_eq!(request_line2.method, "GET");
-    assert_eq!(request_line2.request_target, "/about")
+    assert_eq!(request1.method(), Some("GET"));
+    assert_eq!(request1.path(), Some("/"));
+    assert_eq!(request2.method(), Some("GET"));
+    assert_eq!(request2.path(), Some("/about"))
 }
 
 #[tokio::test]

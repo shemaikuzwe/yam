@@ -13,7 +13,7 @@ use crate::headers::Headers;
 
 #[derive(Debug)]
 pub struct Request {
-    pub request_line: Option<RequestLine>,
+    request_line: Option<RequestLine>,
     pub headers: Headers,
     pub body: Vec<u8>,
     path_params: HashMap<String, String>,
@@ -167,6 +167,22 @@ impl Request {
             .map(|line| line.query.as_str())
             .unwrap_or("");
         serde_urlencoded::from_str(query)
+    }
+
+    pub fn method(&self) -> Option<&str> {
+        self.request_line.as_ref().map(|line| line.method.as_str())
+    }
+
+    pub fn path(&self) -> Option<&str> {
+        self.request_line
+            .as_ref()
+            .map(|line| line.request_target.as_str())
+    }
+
+    pub fn http_version(&self) -> Option<&str> {
+        self.request_line
+            .as_ref()
+            .map(|line| line.http_version.as_str())
     }
 
     pub fn param(&self, name: &str) -> Option<&str> {

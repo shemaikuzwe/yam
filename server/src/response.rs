@@ -9,12 +9,33 @@ use crate::{cookie::Cookie, headers::Headers, request};
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum StatusCode {
     StatusOk = 200,
+    StatusCreated = 201,
+    StatusAccepted = 202,
+    StatusNoContent = 204,
+    StatusMovedPermanently = 301,
+    StatusFound = 302,
+    StatusSeeOther = 303,
+    StatusNotModified = 304,
+    StatusTemporaryRedirect = 307,
+    StatusPermanentRedirect = 308,
     StatusBadRequest = 400,
     StatusUnauthorized = 401,
     StatusForbidden = 403,
     StatusNotFound = 404,
     StatusMethodNotAllowed = 405,
+    StatusNotAcceptable = 406,
+    StatusRequestTimeout = 408,
+    StatusConflict = 409,
+    StatusContentTooLarge = 413,
+    StatusUnsupportedMediaType = 415,
+    StatusUnprocessableContent = 422,
+    StatusTooManyRequests = 429,
     StatusInternalServerError = 500,
+    StatusNotImplemented = 501,
+    StatusBadGateway = 502,
+    StatusServiceUnavailable = 503,
+    StatusGatewayTimeout = 504,
+    StatusHttpVersionNotSupported = 505,
 }
 
 #[derive(Debug)]
@@ -108,12 +129,33 @@ impl<W: AsyncWrite + Unpin> ResponseWriter<W> {
     async fn write_status_line(&mut self, status: StatusCode) -> io::Result<()> {
         let (code, reason) = match status {
             StatusCode::StatusOk => (200, "OK"),
+            StatusCode::StatusCreated => (201, "Created"),
+            StatusCode::StatusAccepted => (202, "Accepted"),
+            StatusCode::StatusNoContent => (204, "No Content"),
+            StatusCode::StatusMovedPermanently => (301, "Moved Permanently"),
+            StatusCode::StatusFound => (302, "Found"),
+            StatusCode::StatusSeeOther => (303, "See Other"),
+            StatusCode::StatusNotModified => (304, "Not Modified"),
+            StatusCode::StatusTemporaryRedirect => (307, "Temporary Redirect"),
+            StatusCode::StatusPermanentRedirect => (308, "Permanent Redirect"),
             StatusCode::StatusBadRequest => (400, "Bad Request"),
             StatusCode::StatusUnauthorized => (401, "Unauthorized"),
             StatusCode::StatusForbidden => (403, "Forbidden"),
             StatusCode::StatusNotFound => (404, "Not Found"),
             StatusCode::StatusMethodNotAllowed => (405, "Method Not Allowed"),
+            StatusCode::StatusNotAcceptable => (406, "Not Acceptable"),
+            StatusCode::StatusRequestTimeout => (408, "Request Timeout"),
+            StatusCode::StatusConflict => (409, "Conflict"),
+            StatusCode::StatusContentTooLarge => (413, "Content Too Large"),
+            StatusCode::StatusUnsupportedMediaType => (415, "Unsupported Media Type"),
+            StatusCode::StatusUnprocessableContent => (422, "Unprocessable Content"),
+            StatusCode::StatusTooManyRequests => (429, "Too Many Requests"),
             StatusCode::StatusInternalServerError => (500, "Internal Server Error"),
+            StatusCode::StatusNotImplemented => (501, "Not Implemented"),
+            StatusCode::StatusBadGateway => (502, "Bad Gateway"),
+            StatusCode::StatusServiceUnavailable => (503, "Service Unavailable"),
+            StatusCode::StatusGatewayTimeout => (504, "Gateway Timeout"),
+            StatusCode::StatusHttpVersionNotSupported => (505, "HTTP Version Not Supported"),
         };
         self.writer
             .write_all(format!("HTTP/1.1 {code} {reason}\r\n").as_bytes())
@@ -170,6 +212,15 @@ impl HttpError {
     pub fn status(&self) -> StatusCode {
         match self {
             HttpError::Io(_) => StatusCode::StatusInternalServerError,
+            HttpError::Request(request::Error::RequestTooLarge) => {
+                StatusCode::StatusContentTooLarge
+            }
+            HttpError::Request(request::Error::MethodNotAllowed) => {
+                StatusCode::StatusNotImplemented
+            }
+            HttpError::Request(request::Error::Parse(
+                request::ParseError::UnsupportedHttpVersion,
+            )) => StatusCode::StatusHttpVersionNotSupported,
             HttpError::Json(_) | HttpError::Form(_) | HttpError::Request(_) => {
                 StatusCode::StatusBadRequest
             }

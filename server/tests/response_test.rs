@@ -91,3 +91,27 @@ async fn should_convert_http_error_to_response() {
     assert_eq!(response.status, StatusCode::StatusBadRequest);
     assert!(!response.body.is_empty());
 }
+
+#[test]
+fn should_map_specific_request_errors_to_statuses() {
+    let cases = [
+        (
+            yam_server::request::Error::RequestTooLarge,
+            StatusCode::StatusContentTooLarge,
+        ),
+        (
+            yam_server::request::Error::MethodNotAllowed,
+            StatusCode::StatusNotImplemented,
+        ),
+        (
+            yam_server::request::Error::Parse(
+                yam_server::request::ParseError::UnsupportedHttpVersion,
+            ),
+            StatusCode::StatusHttpVersionNotSupported,
+        ),
+    ];
+
+    for (error, expected_status) in cases {
+        assert_eq!(HttpError::Request(error).status(), expected_status);
+    }
+}

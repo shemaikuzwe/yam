@@ -53,10 +53,12 @@ async fn main() {
         let cookie = Cookie::new("auth.token", "sub-id")
             .secure(false)
             .path("/")
-            .same_site(yam_server::SameSite::Lax)
-            .max_age(Duration::ZERO);
-        
-        let response = Response::new().cookie(cookie).json(&user)?;
+            .same_site(yam_server::SameSite::Lax);
+
+        let response = Response::new()
+            .cookie(cookie)
+            .status(yam_server::StatusCode::StatusCreated)
+            .json(&user)?;
         Ok(response)
     });
     app.get("/users/{id}", async |req| {

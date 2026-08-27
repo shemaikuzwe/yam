@@ -80,15 +80,15 @@ impl Router {
 
 impl Handler for Router {
     fn call(&self, mut req: Request) -> HandlerFuture {
-        let Some(request_line) = &req.request_line else {
+        let (Some(path), Some(method)) = (req.path(), req.method()) else {
             return Box::pin(async move {
                 Ok(Response::new()
                     .status(StatusCode::StatusBadRequest)
                     .send("Bad request"))
             });
         };
-        let path = self.normalize_path(&request_line.request_target);
-        let method = match Method::try_from(request_line.method.as_str()) {
+        let path = self.normalize_path(path);
+        let method = match Method::try_from(method) {
             Ok(method) => method,
             Err(_) => {
                 return Box::pin(async move {
@@ -123,5 +123,210 @@ impl Handler for Router {
         };
         req.set_params(params);
         Next::new(self.middlewares.clone(), handler).run(req)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, Ordering},
+    };
+
+    use super::*;
+
+    fn request(method: &str, path: &str) -> Request {
+        let mut request = Request::new();
+        request
+            .parse(format!("{method} {path} HTTP/1.1\r\n\r\n").as_bytes())
+            .expect("request should be valid");
+        request
+    }
+
+    #[tokio::test]
+    async fn should_dispatch_registered_get_route() {
+        let mut router = Router::new(RouterConfig::default());
+        router.get("/users", |_| async { "users" });
+
+        let response = router
+            .call(request("GET", "/users"))
+            .await
+            .expect("handler should succeed");
+
+        assert_eq!(response.status, StatusCode::StatusOk);
+        assert_eq!(response.body, b"users");
+    }
+
+    #[tokio::test]
+    async fn should_dispatch_supported_http_methods() {
+        let mut router = Router::new(RouterConfig::default());
+        router.get("/get", |_| async { "GET" });
+        router.post("/post", |_| async { "POST" });
+        router.put("/put", |_| async { "PUT" });
+        router.patch("/patch", |_| async { "PATCH" });
+        router.delete("/delete", |_| async { "DELETE" });
+
+        for (method, path) in [
+            ("GET", "/get"),
+            ("POST", "/post"),
+            ("PUT", "/put"),
+            ("PATCH", "/patch"),
+            ("DELETE", "/delete"),
+        ] {
+            let response = router
+                .call(request(method, path))
+                .await
+                .expect("handler should succeed");
+
+            assert_eq!(response.status, StatusCode::StatusOk);
+            assert_eq!(response.body, method.as_bytes());
+        }
+    }
+
+    #[tokio::test]
+    async fn should_extract_path_parameters() {
+        let mut router = Router::new(RouterConfig::default());
+        router.get("/users/{id}", |request| async move {
+            request.param("id").unwrap_or("missing").to_string()
+        });
+
+        let response = router
+            .call(request("GET", "/users/42"))
+            .await
+            .expect("handler should succeed");
+
+        assert_eq!(response.body, b"42");
+    }
+
+    #[tokio::test]
+    async fn should_return_not_found_for_unknown_path() {
+        let router = Router::new(RouterConfig::default());
+
+        let response = router
+            .call(request("GET", "/missing"))
+            .await
+            .expect("router should return a response");
+
+        assert_eq!(response.status, StatusCode::StatusNotFound);
+    }
+
+    #[tokio::test]
+    async fn should_return_method_not_allowed_for_existing_path() {
+        let mut router = Router::new(RouterConfig::default());
+        router.get("/users", |_| async { "users" });
+
+        let response = router
+            .call(request("POST", "/users"))
+            .await
+            .expect("router should return a response");
+
+        assert_eq!(response.status, StatusCode::StatusMethodNotAllowed);
+    }
+
+    #[tokio::test]
+    async fn should_ignore_trailing_slashes_by_default() {
+        let mut router = Router::new(RouterConfig::default());
+        router.get("/users", |_| async { "users" });
+
+        for path in ["/users", "/users/", "/users///"] {
+            let response = router
+                .call(request("GET", path))
+                .await
+                .expect("handler should succeed");
+
+            assert_eq!(response.status, StatusCode::StatusOk);
+        }
+    }
+
+    #[tokio::test]
+    async fn should_respect_strict_trailing_slashes() {
+        let mut router = Router::new(RouterConfig {
+            strict_trailing_slash: true,
+            ..RouterConfig::default()
+        });
+        router.get("/users", |_| async { "users" });
+
+        let response = router
+            .call(request("GET", "/users/"))
+            .await
+            .expect("router should return a response");
+
+        assert_eq!(response.status, StatusCode::StatusNotFound);
+    }
+
+    #[tokio::test]
+    async fn should_apply_route_prefix() {
+        let mut router = Router::new(RouterConfig {
+            route_prefix: "/api".to_string(),
+            ..RouterConfig::default()
+        });
+        router.get("/users", |_| async { "users" });
+
+        let response = router
+            .call(request("GET", "/api/users"))
+            .await
+            .expect("handler should succeed");
+
+        assert_eq!(response.status, StatusCode::StatusOk);
+    }
+
+    #[tokio::test]
+    async fn should_run_middleware_in_registration_order() {
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let mut router = Router::new(RouterConfig::default());
+
+        for name in ["first", "second"] {
+            let events = Arc::clone(&events);
+            router.middleware(move |request, next: Next| {
+                let events = Arc::clone(&events);
+                async move {
+                    events.lock().unwrap().push(format!("{name}:before"));
+                    let response = next.run(request).await;
+                    events.lock().unwrap().push(format!("{name}:after"));
+                    response
+                }
+            });
+        }
+        router.get("/users", |_| async { "users" });
+
+        router
+            .call(request("GET", "/users"))
+            .await
+            .expect("handler should succeed");
+
+        assert_eq!(
+            *events.lock().unwrap(),
+            [
+                "first:before",
+                "second:before",
+                "second:after",
+                "first:after"
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn should_allow_middleware_to_short_circuit_handler() {
+        let handler_called = Arc::new(AtomicBool::new(false));
+        let mut router = Router::new(RouterConfig::default());
+        router.middleware(|_request, _next: Next| async {
+            Ok(Response::new()
+                .status(StatusCode::StatusUnauthorized)
+                .send("Unauthorized"))
+        });
+
+        let handler_called_by_route = Arc::clone(&handler_called);
+        router.get("/users", move |_| {
+            handler_called_by_route.store(true, Ordering::SeqCst);
+            async { "users" }
+        });
+
+        let response = router
+            .call(request("GET", "/users"))
+            .await
+            .expect("middleware should return a response");
+
+        assert_eq!(response.status, StatusCode::StatusUnauthorized);
+        assert!(!handler_called.load(Ordering::SeqCst));
     }
 }
