@@ -183,11 +183,20 @@ impl Request {
             .parse::<T>()
             .map_err(|_| ParamError::Invalid(name.to_string()).into())
     }
+}
+
+impl Request {
     pub fn set_params(&mut self, params: HashMap<String, String>) {
         self.path_params = params
     }
+    pub fn cookie(&self, name: &str) -> Option<&str> {
+        self.headers
+            .get_all("cookie")
+            .flat_map(|header| header.split(';'))
+            .filter_map(|cookie| cookie.trim().split_once('='))
+            .find_map(|(cookie_name, value)| (cookie_name.trim() == name).then_some(value.trim()))
+    }
 }
-
 #[derive(Debug, Error)]
 pub enum Error {
     #[error("io error: {0}")]
@@ -398,6 +407,19 @@ mod tests {
             ..Request::new()
         };
         assert!(request.json::<Login>().is_err());
+    }
+    #[test]
+    fn should_get_cookie_from_repeated_cookie_headers() {
+        let mut request = Request::new();
+        request
+            .headers
+            .append("cookie", "session=abc=123; theme=dark".to_string());
+        request.headers.append("cookie", "locale=en".to_string());
+
+        assert_eq!(Some("abc=123"), request.cookie("session"));
+        assert_eq!(Some("dark"), request.cookie("theme"));
+        assert_eq!(Some("en"), request.cookie("locale"));
+        assert_eq!(None, request.cookie("missing"));
     }
     #[test]
     fn should_return_utf8_string() {

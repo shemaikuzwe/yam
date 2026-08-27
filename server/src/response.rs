@@ -4,7 +4,7 @@ use serde::Serialize;
 use thiserror::Error;
 use tokio::io::{AsyncWrite, AsyncWriteExt};
 
-use crate::{headers::Headers, request};
+use crate::{cookie::Cookie, headers::Headers, request};
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum StatusCode {
@@ -50,6 +50,10 @@ impl Response {
     pub fn json(self, body: &impl Serialize) -> Result<Self, serde_json::Error> {
         let body = serde_json::to_vec(body)?;
         Ok(self.set("content-type", "application/json").send(body))
+    }
+    pub fn cookie(mut self, cookie: Cookie) -> Self {
+        self.headers.append("set-cookie", cookie.to_string());
+        self
     }
 }
 
@@ -212,5 +216,21 @@ mod tests {
             .unwrap();
 
         assert!(output.ends_with(&[1, 2, 3, 4]));
+    }
+    #[tokio::test]
+    async fn should_send_multiple_cookies_as_separate_headers() {
+        let mut output = Vec::new();
+        let response = Response::new()
+            .cookie(Cookie::new("session", "abc123").http_only(true))
+            .cookie(Cookie::new("theme", "dark"));
+
+        ResponseWriter::new(&mut output)
+            .send_response(response)
+            .await
+            .unwrap();
+
+        let output = String::from_utf8(output).unwrap();
+        assert!(output.contains("set-cookie: session=abc123; SameSite=Lax; HttpOnly\r\n"));
+        assert!(output.contains("set-cookie: theme=dark; SameSite=Lax\r\n"));
     }
 }

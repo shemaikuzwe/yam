@@ -4,7 +4,7 @@ const SEPARATOR: &[u8] = b"\r\n";
 
 #[derive(Debug)]
 pub struct Headers {
-    pub headers: HashMap<String, String>,
+    headers: HashMap<String, Vec<String>>,
 }
 impl Headers {
     pub fn new() -> Headers {
@@ -12,28 +12,33 @@ impl Headers {
             headers: HashMap::new(),
         }
     }
-    pub fn get(&self, name: &str) -> Option<&String> {
-        let name = &name.to_lowercase();
-        self.headers.get(name)
+    pub fn get(&self, name: &str) -> Option<&str> {
+        self.headers
+            .get(&name.to_lowercase())?
+            .first()
+            .map(String::as_str)
     }
     pub fn set(&mut self, name: &str, value: String) {
         let name = name.to_lowercase();
-        self.headers.insert(name, value);
+        self.headers.insert(name, vec![value]);
     }
     pub fn append(&mut self, name: &str, value: String) {
         let name = name.to_lowercase();
-        if can_append_header(name.as_str()) {
-            if let Some(val) = self.headers.get(name.as_str()) {
-                self.headers.insert(name, format!("{},{}", val, value));
-            } else {
-                self.headers.insert(name, value);
-            }
-        } else {
-            self.headers.insert(name, value);
-        }
+        self.headers.entry(name).or_default().push(value);
     }
-    pub fn iter(&self) -> impl Iterator<Item = (&String, &String)> {
-        self.headers.iter()
+    pub fn get_all(&self, name: &str) -> impl Iterator<Item = &str> {
+        self.headers
+            .get(&name.to_lowercase())
+            .into_iter()
+            .flatten()
+            .map(String::as_str)
+    }
+    pub fn iter(&self) -> impl Iterator<Item = (&str, &str)> {
+        self.headers.iter().flat_map(|(name, values)| {
+            values
+                .iter()
+                .map(move |value| (name.as_str(), value.as_str()))
+        })
     }
     pub fn parse(&mut self, data: &[u8]) -> Result<(usize, bool), ParseError> {
         let mut read = 0;
@@ -102,13 +107,6 @@ fn is_valid_token(value: &str) -> bool {
         })
 }
 
-fn can_append_header(name: &str) -> bool {
-    matches!(
-        name,
-        "accept" | "accept-encoding" | "accept-language" | "cache-control" | "warning" | "via"
-    )
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -149,9 +147,20 @@ mod tests {
         let mut headers = Headers::new();
         let data = b"accept: text/html\r\naccept: application/json\r\n\r\n";
         headers.parse(data).expect("Should noot get error here");
-        let accept = headers
-            .get("accept")
-            .expect("should not get error while header.get(accept)");
-        assert_eq!("text/html,application/json", accept);
+        let accept = headers.get_all("accept").collect::<Vec<_>>();
+        assert_eq!(vec!["text/html", "application/json"], accept);
+    }
+    #[test]
+    fn set_replaces_existing_values() {
+        let mut headers = Headers::new();
+        headers.append("accept", "text/html".to_string());
+        headers.append("accept", "application/json".to_string());
+
+        headers.set("accept", "text/plain".to_string());
+
+        assert_eq!(
+            vec!["text/plain"],
+            headers.get_all("accept").collect::<Vec<_>>()
+        );
     }
 }

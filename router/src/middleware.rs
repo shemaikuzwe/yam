@@ -35,11 +35,11 @@ impl Next {
 }
 
 impl<F, Fut> Middleware for F
- where
-     F: Fn(Request, Next) -> Fut + Send + Sync + 'static,
-     Fut: Future<Output = Result<Response, HttpError>> + Send + 'static,
- {
-     fn call(&self, req: Request, next: Next) -> HandlerFuture {
-         Box::pin(self(req, next))
-     }
- }
+where
+    F: Fn(Request, Next) -> Fut + Send + Sync + 'static,
+    Fut: Future<Output = Result<Response, HttpError>> + Send + 'static,
+{
+    fn call(&self, req: Request, next: Next) -> HandlerFuture {
+        Box::pin(self(req, next))
+    }
+}

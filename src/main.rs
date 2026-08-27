@@ -1,4 +1,4 @@
-use std::println;
+use std::{println, time::Duration};
 
 use serde::Deserialize;
 use serde_json::json;
@@ -7,7 +7,7 @@ use yam_router::{
     Next,
     router::{Router, RouterConfig},
 };
-use yam_server::{Request, Response};
+use yam_server::{Cookie, Request, Response};
 
 #[derive(Deserialize)]
 struct LoginPaylod {
@@ -50,7 +50,14 @@ async fn main() {
             "email": data.email,
             "name": name
         });
-        Ok(user)
+        let cookie = Cookie::new("auth.token", "sub-id")
+            .secure(false)
+            .path("/")
+            .same_site(yam_server::SameSite::Lax)
+            .max_age(Duration::ZERO);
+        
+        let response = Response::new().cookie(cookie).json(&user)?;
+        Ok(response)
     });
     app.get("/users/{id}", async |req| {
         let id: u32 = req.param_as("id")?;
