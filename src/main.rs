@@ -35,7 +35,7 @@ async fn main() {
         Ok(response)
     });
 
-    app.get("/", async |_req| Response::new().send("shsh"));
+    app.get("/", async |_req| Response::new().send("Hello world"));
     app.get("/users", async |req| {
         let pagination: Pagination = req.query()?;
         let page = pagination.page.unwrap_or(1);

@@ -1,2 +1,1 @@
-#[derive(Debug)]
-pub struct HttpClient {}
+pub mod client;
