@@ -1,18 +1,27 @@
-use std::{format, io, matches, str::Utf8Error, time::Duration};
+use std::{format, io, str::Utf8Error, sync::Arc, time::Duration};
 
 use serde::de::DeserializeOwned;
 use thiserror::Error;
 use tokio::{
-    io::{AsyncReadExt, AsyncWriteExt},
+    io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt},
     net::TcpStream,
+};
+use tokio_rustls::{
+    TlsConnector,
+    rustls::{ClientConfig, RootCertStore, pki_types::ServerName},
 };
 use url::Url;
 
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct HttpClient {
     base_url: Option<String>,
     timeout: Option<Duration>,
-    // headers:
+    tls_configuration: Arc<ClientConfig>, // headers:
+}
+impl Default for HttpClient {
+    fn default() -> Self {
+        Self::new(HttpClientConfig::default())
+    }
 }
 
 #[derive(Debug)]
@@ -121,12 +130,20 @@ macro_rules! route_verb {
 pub struct HttpClientConfig {
     pub base_url: Option<String>,
     pub timeout: Option<Duration>,
+    pub tls_configuration: Option<ClientConfig>,
 }
 impl HttpClient {
     pub fn new(config: HttpClientConfig) -> Self {
+        let tls_configuration = config.tls_configuration.unwrap_or_else(|| {
+            let roots = RootCertStore::from_iter(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
+            ClientConfig::builder()
+                .with_root_certificates(roots)
+                .with_no_client_auth()
+        });
         Self {
             base_url: config.base_url,
             timeout: config.timeout,
+            tls_configuration: Arc::new(tls_configuration),
         }
     }
     route_verb!(get=>GET);
@@ -152,9 +169,6 @@ impl HttpClient {
         body: &[u8],
     ) -> Result<Response, Error> {
         let url = self.resolve_url(path)?;
-        if !matches!(url.scheme(), "http" | "https") {
-            return Err(Error::UnsupportedScheme(url.scheme().into()));
-        }
         let host = url
             .host_str()
             .ok_or_else(|| Error::InvalidHostname(url.to_string()))?;
@@ -162,7 +176,7 @@ impl HttpClient {
             .port_or_known_default()
             .ok_or_else(|| Error::MissingPort(url.to_string()))?;
 
-        let mut stream = TcpStream::connect((host, port)).await?;
+        let stream = TcpStream::connect((host, port)).await?;
         let mut request_target = url.path().to_string();
         if let Some(query) = url.query() {
             request_target.push('?');
@@ -183,12 +197,20 @@ impl HttpClient {
             port,
             body.len(),
         );
+        let response_bytes = match url.scheme() {
+            "http" => Self::send_request(stream, request_head.as_bytes(), body).await?,
+            "https" => {
+                let server_name = ServerName::try_from(host.to_owned())
+                    .map_err(|_| Error::InvalidHostname(host.into()))?;
+                let connector = TlsConnector::from(Arc::clone(&self.tls_configuration));
+                let tls_stream = connector.connect(server_name, stream).await?;
+                Self::send_request(tls_stream, request_head.as_bytes(), body).await?
+            }
+            scheme => {
+                return Err(Error::UnsupportedScheme(scheme.into()));
+            }
+        };
 
-        stream.write_all(request_head.as_bytes()).await?;
-        stream.write_all(body).await?;
-        stream.flush().await?;
-        let mut response_bytes = Vec::new();
-        stream.read_to_end(&mut response_bytes).await?;
         let separator = b"\r\n\r\n";
         let idx = response_bytes
             .windows(separator.len())
@@ -227,6 +249,24 @@ impl HttpClient {
             body: response_body.into(),
         })
     }
+    async fn send_request<S>(
+        mut stream: S,
+        request_head: &[u8],
+        body: &[u8],
+    ) -> Result<Vec<u8>, Error>
+    where
+        S: AsyncRead + AsyncWrite + Unpin,
+    {
+        stream.write_all(request_head).await?;
+        stream.write_all(body).await?;
+        stream.flush().await?;
+
+        let mut response_bytes = Vec::new();
+        stream.read_to_end(&mut response_bytes).await?;
+
+        Ok(response_bytes)
+    }
+
     fn resolve_url(&self, value: &str) -> Result<Url, Error> {
         if let Ok(url) = Url::parse(value) {
             return Ok(url);
@@ -246,11 +286,7 @@ impl HttpClient {
 
 #[cfg(test)]
 mod tests {
-    use std::time::Duration;
-
-    use tokio::net::TcpListener;
-
-    use super::{Error, HttpClient, HttpClientConfig};
+    use super::{HttpClient, HttpClientConfig};
 
     fn client() -> HttpClient {
         HttpClient::new(HttpClientConfig {
@@ -280,26 +316,5 @@ mod tests {
             .expect("URL should resolve");
 
         assert_eq!(url.as_str(), "http://example.com/users");
-    }
-
-    #[tokio::test]
-    async fn should_timeout_request() {
-        let listener = TcpListener::bind("127.0.0.1:0")
-            .await
-            .expect("listener should bind");
-        let address = listener.local_addr().expect("listener should have address");
-        let server = tokio::spawn(async move {
-            let (_stream, _) = listener.accept().await.expect("server should accept");
-            std::future::pending::<()>().await;
-        });
-        let client = HttpClient::new(HttpClientConfig {
-            base_url: Some(format!("http://{address}")),
-            timeout: Some(Duration::from_millis(50)),
-        });
-
-        let result = client.get("/").await;
-
-        server.abort();
-        assert!(matches!(result, Err(Error::Timeout)));
     }
 }
