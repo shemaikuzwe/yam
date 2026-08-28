@@ -10,7 +10,7 @@ use url::Url;
 
 #[derive(Debug, Default)]
 pub struct HttpClient {
-    base_url: Option<Url>,
+    base_url: Option<String>,
     timeout: Option<Duration>,
     // headers:
 }
@@ -88,6 +88,8 @@ pub enum Error {
 
     #[error("response body is not valid UTF-8: {0}")]
     Utf8(#[from] Utf8Error),
+    #[error("request timed out")]
+    Timeout,
 }
 
 macro_rules! route_verb {
@@ -115,8 +117,18 @@ macro_rules! route_verb {
     };
 }
 
+#[derive(Default)]
+pub struct HttpClientConfig {
+    pub base_url: Option<String>,
+    pub timeout: Option<Duration>,
+}
 impl HttpClient {
-    pub fn new() {}
+    pub fn new(config: HttpClientConfig) -> Self {
+        Self {
+            base_url: config.base_url,
+            timeout: config.timeout,
+        }
+    }
     route_verb!(get=>GET);
     route_verb!(post=>POST,body);
     route_verb!(put=>PUT,body);
@@ -124,6 +136,21 @@ impl HttpClient {
     route_verb!(delete=>DELETE);
 
     async fn request(&self, method: Method, path: &str, body: &[u8]) -> Result<Response, Error> {
+        let request = self.run_request(method, path, body);
+        match self.timeout {
+            Some(duration) => tokio::time::timeout(duration, request)
+                .await
+                .map_err(|_| Error::Timeout)?,
+            None => request.await,
+        }
+    }
+
+    async fn run_request(
+        &self,
+        method: Method,
+        path: &str,
+        body: &[u8],
+    ) -> Result<Response, Error> {
         let url = self.resolve_url(path)?;
         if !matches!(url.scheme(), "http" | "https") {
             return Err(Error::UnsupportedScheme(url.scheme().into()));
@@ -208,6 +235,71 @@ impl HttpClient {
             .base_url
             .as_ref()
             .ok_or_else(|| Error::MissingBaseUrl)?;
-        base_url.join(value).map_err(|error| Error::Url(error))
+        let url = format!(
+            "{}/{}",
+            base_url.trim_end_matches('/'),
+            value.trim_start_matches('/')
+        );
+        Url::parse(&url).map_err(Error::Url)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::Duration;
+
+    use tokio::net::TcpListener;
+
+    use super::{Error, HttpClient, HttpClientConfig};
+
+    fn client() -> HttpClient {
+        HttpClient::new(HttpClientConfig {
+            base_url: Some("http://localhost:3000/api/v1".into()),
+            ..Default::default()
+        })
+    }
+
+    #[test]
+    fn should_resolve_root_relative_to_base_url() {
+        let url = client().resolve_url("/").expect("URL should resolve");
+
+        assert_eq!(url.as_str(), "http://localhost:3000/api/v1/");
+    }
+
+    #[test]
+    fn should_resolve_path_relative_to_base_url() {
+        let url = client().resolve_url("/users").expect("URL should resolve");
+
+        assert_eq!(url.as_str(), "http://localhost:3000/api/v1/users");
+    }
+
+    #[test]
+    fn should_preserve_absolute_url() {
+        let url = client()
+            .resolve_url("http://example.com/users")
+            .expect("URL should resolve");
+
+        assert_eq!(url.as_str(), "http://example.com/users");
+    }
+
+    #[tokio::test]
+    async fn should_timeout_request() {
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("listener should bind");
+        let address = listener.local_addr().expect("listener should have address");
+        let server = tokio::spawn(async move {
+            let (_stream, _) = listener.accept().await.expect("server should accept");
+            std::future::pending::<()>().await;
+        });
+        let client = HttpClient::new(HttpClientConfig {
+            base_url: Some(format!("http://{address}")),
+            timeout: Some(Duration::from_millis(50)),
+        });
+
+        let result = client.get("/").await;
+
+        server.abort();
+        assert!(matches!(result, Err(Error::Timeout)));
     }
 }
