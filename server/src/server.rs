@@ -41,7 +41,10 @@ impl Server {
     }
 }
 
-pub async fn handle_request(mut stream: TcpStream, handler: Arc<dyn Handler>) -> io::Result<()> {
+pub async fn handle_request(
+    mut stream: TcpStream,
+    handler: Arc<dyn Handler>,
+) -> Result<(), HttpError> {
     let request = {
         let mut request_reader = RequestReader::new(&mut stream);
         request_reader.handle_request().await

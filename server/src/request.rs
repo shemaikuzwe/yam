@@ -62,6 +62,12 @@ impl From<HeaderParseError> for ParseError {
     }
 }
 const SEPARATOR: &[u8] = b"\r\n";
+
+impl Default for Request {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 impl Request {
     pub fn new() -> Request {
         Request {
@@ -595,7 +601,7 @@ mod tests {
     fn query_should_error_on_invalid_query() {
         #[derive(Deserialize)]
         struct Pagination {
-            page: u64,
+            _page: u64,
         }
         let mut request = Request::new();
         request.request_line = Some(RequestLine {

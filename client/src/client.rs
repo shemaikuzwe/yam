@@ -496,7 +496,7 @@ let response = client
         let base_url = self
             .base_url
             .as_ref()
-            .ok_or_else(|| Error::MissingBaseUrl)?;
+            .ok_or(Error::MissingBaseUrl)?;
         let url = format!(
             "{}/{}",
             base_url.trim_end_matches('/'),

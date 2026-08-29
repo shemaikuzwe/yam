@@ -103,7 +103,7 @@ impl Cookie {
 impl fmt::Display for Cookie {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(formatter, "{}={}", self.name, self.value)?;
-        write!(formatter, "; SameSite={}", self.same_site.to_string())?;
+        write!(formatter, "; SameSite={}", self.same_site)?;
         if let Some(path) = &self.path {
             write!(formatter, "; Path={path}")?;
         }

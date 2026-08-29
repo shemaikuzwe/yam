@@ -9,7 +9,6 @@ use yam_server::{
 
 use crate::middleware::{Middleware, Next};
 
-/// An HTTP router that dispatches requests by method and path.
 pub struct Router {
     routes: HashMap<Method, MatchRouter<Arc<dyn Handler>>>,
     middlewares: Vec<Arc<dyn Middleware>>,
@@ -28,13 +27,14 @@ pub struct RouterConfig {
 macro_rules! route_verb {
     ($(#[$docs:meta])* $name:ident => $method:ident) => {
         $(#[$docs])*
-        pub fn $name<R, F, Fut>(&mut self, path: &str, handler: F)
+        pub fn $name<R, F, Fut>(&mut self, path: &str, handler: F) -> &mut Self
         where
             R: IntoResponse + Send + 'static,
             F: Fn(Request) -> Fut + Send + Sync + 'static,
             Fut: Future<Output = R> + Send + 'static,
         {
             self.add_route(Method::$method, path, handler);
+            self
         }
     };
 }
@@ -146,7 +146,6 @@ impl Router {
         #[doc = "```"]
         delete => DELETE
     );
-
     /// Appends middleware that will wrap every matched route.
     ///
     /// Call [`Next::run`] to continue to the next middleware or route handler.
@@ -163,11 +162,12 @@ impl Router {
     ///     Ok(response)
     /// });
     /// ```
-    pub fn middleware<M>(&mut self, middleware: M)
+    pub fn middleware<M>(&mut self, middleware: M) -> &mut Self
     where
         M: Middleware,
     {
         self.middlewares.push(Arc::new(middleware));
+        self
     }
     fn add_route<H: Handler>(&mut self, method: Method, path: &str, handler: H) {
         let path = format!("{}{path}", self.route_prefix);

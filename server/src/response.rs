@@ -1,4 +1,4 @@
-use std::io::{self, ErrorKind::InvalidData};
+use std::io;
 
 use serde::Serialize;
 use thiserror::Error;
@@ -45,7 +45,11 @@ pub struct Response {
     pub headers: Headers,
     pub body: Vec<u8>,
 }
-
+impl Default for Response {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 impl Response {
     /// Creates a `200 OK` plain-text response with an empty body.
     ///
@@ -207,7 +211,7 @@ impl<W: AsyncWrite + Unpin> ResponseWriter<W> {
             .await?;
         Ok(())
     }
-    pub async fn send_response(self, mut response: Response) -> io::Result<()> {
+    pub async fn send_response(self, mut response: Response) -> Result<(), HttpError> {
         let mut this = self;
         response
             .headers
@@ -223,17 +227,15 @@ impl<W: AsyncWrite + Unpin> ResponseWriter<W> {
         this.writer.flush().await?;
         Ok(())
     }
-    pub async fn send(self, body: impl AsRef<[u8]>) -> io::Result<()> {
+    pub async fn send(self, body: impl AsRef<[u8]>) -> Result<(), HttpError> {
         self.send_response(Response {
             body: body.as_ref().to_vec(),
             ..Response::new()
         })
         .await
     }
-    pub async fn json(self, body: &impl Serialize) -> io::Result<()> {
-        let response = Response::new()
-            .json(body)
-            .map_err(|_| io::Error::new(InvalidData, "Invalid json"))?;
+    pub async fn json(self, body: &impl Serialize) -> Result<(), HttpError> {
+        let response = Response::new().json(body)?;
         self.send_response(response).await
     }
 }
