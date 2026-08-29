@@ -1,6 +1,6 @@
 use std::{format, io, str::Utf8Error, sync::Arc, time::Duration};
 
-use serde::de::DeserializeOwned;
+use serde::{Serialize, de::DeserializeOwned};
 use thiserror::Error;
 use tokio::{
     io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt},
@@ -11,12 +11,14 @@ use tokio_rustls::{
     rustls::{ClientConfig, RootCertStore, pki_types::ServerName},
 };
 use url::Url;
+use yam_shared::Headers;
 
 #[derive(Debug)]
 pub struct HttpClient {
     base_url: Option<String>,
     timeout: Option<Duration>,
-    tls_configuration: Arc<ClientConfig>, // headers:
+    tls_configuration: Arc<ClientConfig>,
+    headers: Headers,
 }
 impl Default for HttpClient {
     fn default() -> Self {
@@ -94,6 +96,8 @@ pub enum Error {
     InvalidResponse(String),
     #[error("invalid JSON body: {0}")]
     Json(#[from] serde_json::Error),
+    #[error("invalid form body: {0}")]
+    Form(#[from] serde_urlencoded::ser::Error),
 
     #[error("response body is not valid UTF-8: {0}")]
     Utf8(#[from] Utf8Error),
@@ -101,27 +105,57 @@ pub enum Error {
     Timeout,
 }
 
+#[derive(Debug)]
+pub struct Body {
+    bytes: Vec<u8>,
+    content_type: Option<String>,
+}
+
+impl Body {
+    pub fn json<T: Serialize>(value: &T) -> Result<Self, serde_json::Error> {
+        Ok(Self {
+            bytes: serde_json::to_vec(value)?,
+            content_type: Some("application/json".into()),
+        })
+    }
+
+    pub fn form<T: Serialize>(value: &T) -> Result<Self, serde_urlencoded::ser::Error> {
+        Ok(Self {
+            bytes: serde_urlencoded::to_string(value)?.into_bytes(),
+            content_type: Some("application/x-www-form-urlencoded".into()),
+        })
+    }
+
+    pub fn text(value: impl Into<String>) -> Self {
+        Self {
+            bytes: value.into().into_bytes(),
+            content_type: Some("text/plain; charset=utf-8".into()),
+        }
+    }
+
+    pub fn bytes(value: impl Into<Vec<u8>>) -> Self {
+        Self {
+            bytes: value.into(),
+            content_type: None,
+        }
+    }
+}
+
+#[derive(Debug, Default)]
+pub struct RequestOptions {
+    pub headers: Vec<(String, String)>,
+    pub body: Option<Body>,
+}
+
 macro_rules! route_verb {
-    // Methods without a request body.
     ($(#[$docs:meta])* $name:ident => $method:ident) => {
         $(#[$docs])*
         pub async fn $name(
             &self,
             path: &str,
+            options: RequestOptions,
         ) -> Result<Response, Error> {
-            self.request(Method::$method, path, &[]).await
-        }
-    };
-
-    // Methods with a request body.
-    ($(#[$docs:meta])* $name:ident => $method:ident, body) => {
-        $(#[$docs])*
-        pub async fn $name(
-            &self,
-            path: &str,
-            body: impl AsRef<[u8]>,
-        ) -> Result<Response, Error> {
-            self.request(Method::$method, path, body.as_ref()).await
+            self.request(Method::$method, path, options).await
         }
     };
 }
@@ -131,6 +165,7 @@ pub struct HttpClientConfig {
     pub base_url: Option<String>,
     pub timeout: Option<Duration>,
     pub tls_configuration: Option<ClientConfig>,
+    pub headers: Vec<(String, String)>,
 }
 impl HttpClient {
     pub fn new(config: HttpClientConfig) -> Self {
@@ -140,20 +175,30 @@ impl HttpClient {
                 .with_root_certificates(roots)
                 .with_no_client_auth()
         });
+        let mut headers = Headers::new();
+        for (name, value) in config.headers {
+            headers.append(&name, value);
+        }
         Self {
             base_url: config.base_url,
             timeout: config.timeout,
             tls_configuration: Arc::new(tls_configuration),
+            headers,
         }
     }
     route_verb!(get=>GET);
-    route_verb!(post=>POST,body);
-    route_verb!(put=>PUT,body);
-    route_verb!(patch=>PATCH,body);
+    route_verb!(post=>POST);
+    route_verb!(put=>PUT);
+    route_verb!(patch=>PATCH);
     route_verb!(delete=>DELETE);
 
-    async fn request(&self, method: Method, path: &str, body: &[u8]) -> Result<Response, Error> {
-        let request = self.run_request(method, path, body);
+    async fn request(
+        &self,
+        method: Method,
+        path: &str,
+        options: RequestOptions,
+    ) -> Result<Response, Error> {
+        let request = self.run_request(method, path, options);
         match self.timeout {
             Some(duration) => tokio::time::timeout(duration, request)
                 .await
@@ -166,7 +211,7 @@ impl HttpClient {
         &self,
         method: Method,
         path: &str,
-        body: &[u8],
+        options: RequestOptions,
     ) -> Result<Response, Error> {
         let url = self.resolve_url(path)?;
         let host = url
@@ -183,28 +228,31 @@ impl HttpClient {
             request_target.push_str(query);
         }
 
-        let request_head = format!(
-            concat!(
-                "{} {} HTTP/1.1\r\n",
-                "Host: {}:{}\r\n",
-                "Connection: close\r\n",
-                "Content-Length: {}\r\n",
-                "\r\n",
-            ),
-            method.as_str(),
-            request_target,
-            host,
-            port,
-            body.len(),
-        );
+        let mut headers = self.headers.clone();
+        let body = options.body.unwrap_or_else(|| Body::bytes(Vec::new()));
+        if let Some(content_type) = body.content_type {
+            headers.set("content-type", content_type);
+        }
+        for (name, value) in options.headers {
+            headers.set(&name, value);
+        }
+        headers.set("host", format!("{host}:{port}"));
+        headers.set("connection", "close".into());
+        headers.set("content-length", body.bytes.len().to_string());
+
+        let mut request_head = format!("{} {} HTTP/1.1\r\n", method.as_str(), request_target);
+        for (name, value) in headers.iter() {
+            request_head.push_str(&format!("{name}: {value}\r\n"));
+        }
+        request_head.push_str("\r\n");
         let response_bytes = match url.scheme() {
-            "http" => Self::send_request(stream, request_head.as_bytes(), body).await?,
+            "http" => Self::send_request(stream, request_head.as_bytes(), &body.bytes).await?,
             "https" => {
                 let server_name = ServerName::try_from(host.to_owned())
                     .map_err(|_| Error::InvalidHostname(host.into()))?;
                 let connector = TlsConnector::from(Arc::clone(&self.tls_configuration));
                 let tls_stream = connector.connect(server_name, stream).await?;
-                Self::send_request(tls_stream, request_head.as_bytes(), body).await?
+                Self::send_request(tls_stream, request_head.as_bytes(), &body.bytes).await?
             }
             scheme => {
                 return Err(Error::UnsupportedScheme(scheme.into()));

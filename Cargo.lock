@@ -1051,11 +1051,13 @@ dependencies = [
  "rcgen",
  "serde",
  "serde_json",
+ "serde_urlencoded",
  "thiserror",
  "tokio",
  "tokio-rustls",
  "url",
  "webpki-roots",
+ "yam-shared",
 ]
 
 [[package]]
@@ -1076,6 +1078,14 @@ dependencies = [
  "serde_urlencoded",
  "thiserror",
  "tokio",
+ "yam-shared",
+]
+
+[[package]]
+name = "yam-shared"
+version = "0.1.0"
+dependencies = [
+ "thiserror",
 ]
 
 [[package]]

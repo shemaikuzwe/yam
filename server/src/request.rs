@@ -10,6 +10,7 @@ use thiserror::Error;
 use tokio::io::{AsyncRead, AsyncReadExt};
 
 use crate::headers::Headers;
+use yam_shared::HeaderParseError;
 
 #[derive(Debug)]
 pub struct Request {
@@ -49,6 +50,16 @@ pub enum ParseError {
     InvalidHeaderKey,
     #[error("invalid content-length header")]
     InvalidContentLengthHeader,
+}
+
+impl From<HeaderParseError> for ParseError {
+    fn from(error: HeaderParseError) -> Self {
+        match error {
+            HeaderParseError::IncompleteFieldLine => Self::IncompleteFieldLine,
+            HeaderParseError::InvalidFieldLine => Self::InvalidFieldLine,
+            HeaderParseError::InvalidHeaderKey => Self::InvalidHeaderKey,
+        }
+    }
 }
 const SEPARATOR: &[u8] = b"\r\n";
 impl Request {
@@ -97,7 +108,7 @@ impl Request {
                     self.parse_state = ParseState::HEADERS
                 }
                 ParseState::HEADERS => {
-                    let result = self.headers.parse(curr_data)?;
+                    let result = self.headers.parse(curr_data).map_err(ParseError::from)?;
                     if result.0 == 0 {
                         return Ok(read);
                     }

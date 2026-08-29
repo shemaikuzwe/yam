@@ -12,7 +12,7 @@ use tokio_rustls::{
         pki_types::{CertificateDer, PrivatePkcs8KeyDer},
     },
 };
-use yam_client::client::{Error, HttpClient, HttpClientConfig};
+use yam_client::client::{Body, Error, HttpClient, HttpClientConfig, RequestOptions};
 
 fn tls_configuration() -> (TlsAcceptor, CertificateDer<'static>) {
     let CertifiedKey { cert, signing_key } = generate_simple_self_signed(vec!["127.0.0.1".into()])
@@ -54,7 +54,7 @@ async fn should_timeout_request() {
         ..Default::default()
     });
 
-    let result = client.get("/").await;
+    let result = client.get("/", RequestOptions::default()).await;
 
     server.abort();
     assert!(matches!(result, Err(Error::Timeout)));
@@ -90,7 +90,10 @@ async fn should_perform_tls_handshake() {
         ..Default::default()
     });
 
-    let response = client.get("/").await.expect("HTTPS request should succeed");
+    let response = client
+        .get("/", RequestOptions::default())
+        .await
+        .expect("HTTPS request should succeed");
 
     server.await.expect("server task should finish");
     assert_eq!(response.status, 200);
@@ -113,7 +116,7 @@ async fn should_reject_untrusted_certificate() {
         ..Default::default()
     });
 
-    let result = client.get("/").await;
+    let result = client.get("/", RequestOptions::default()).await;
 
     server.await.expect("server task should finish");
     assert!(matches!(result, Err(Error::Io(_))));
@@ -135,8 +138,57 @@ async fn should_timeout_tls_handshake() {
         ..Default::default()
     });
 
-    let result = client.get("/").await;
+    let result = client.get("/", RequestOptions::default()).await;
 
     server.abort();
     assert!(matches!(result, Err(Error::Timeout)));
+}
+
+#[tokio::test]
+async fn should_merge_request_headers_in_precedence_order() {
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("listener should bind");
+    let address = listener.local_addr().expect("listener should have address");
+    let server = tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.expect("server should accept");
+        let mut request = [0; 2048];
+        let read = stream
+            .read(&mut request)
+            .await
+            .expect("server should read request");
+        stream
+            .write_all(b"HTTP/1.1 200 OK\r\nConnection: close\r\nContent-Length: 2\r\n\r\nok")
+            .await
+            .expect("server should write response");
+        String::from_utf8(request[..read].to_vec()).expect("request should be UTF-8")
+    });
+    let client = HttpClient::new(HttpClientConfig {
+        base_url: Some(format!("http://{address}")),
+        headers: vec![
+            ("accept".into(), "text/plain".into()),
+            ("accept".into(), "application/xml".into()),
+            ("content-type".into(), "text/plain".into()),
+            ("host".into(), "invalid.example".into()),
+        ],
+        ..Default::default()
+    });
+    let options = RequestOptions {
+        headers: vec![("accept".into(), "application/json".into())],
+        body: Some(Body::json(&serde_json::json!({ "name": "Yam" })).unwrap()),
+    };
+
+    client
+        .post("/users", options)
+        .await
+        .expect("request should succeed");
+    let request = server.await.expect("server task should finish");
+
+    assert!(request.contains("accept: application/json\r\n"));
+    assert!(!request.contains("accept: text/plain\r\n"));
+    assert!(!request.contains("accept: application/xml\r\n"));
+    assert!(request.contains("content-type: application/json\r\n"));
+    assert!(request.contains(&format!("host: {address}\r\n")));
+    assert!(request.contains("content-length: 14\r\n"));
+    assert!(request.ends_with("\r\n\r\n{\"name\":\"Yam\"}"));
 }
