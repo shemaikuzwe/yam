@@ -34,21 +34,58 @@ pub struct Response {
 }
 
 impl Response {
+    /// Deserializes the response body as JSON.
+    ///
+    /// ```
+    /// use serde::Deserialize;
+    /// use yam_client::client::Response;
+    /// #[derive(Deserialize)]
+    /// struct User { id: u64 }
+    ///
+    /// let response = Response {
+    ///     status: 200,
+    ///     headers: vec![],
+    ///     body: br#"{"id":42}"#.to_vec(),
+    /// };
+    /// let user: User = response.json()?;
+    /// assert_eq!(user.id, 42);
+    /// # Ok::<(), serde_json::Error>(())
+    /// ```
     pub fn json<T>(&self) -> Result<T, serde_json::Error>
     where
         T: DeserializeOwned,
     {
         serde_json::from_slice(&self.body)
     }
+    /// Reads the response body as UTF-8 text.
     pub fn text(&self) -> Result<&str, std::str::Utf8Error> {
         std::str::from_utf8(&self.body)
     }
+    /// Returns `true` for status codes from 200 through 299.
+    ///
+    /// ```
+    /// use yam_client::client::Response;
+    /// let response = Response { status: 204, headers: vec![], body: vec![] };
+    /// assert!(response.ok());
+    /// ```
     pub fn ok(&self) -> bool {
         (200..=299).contains(&self.status)
     }
+    /// Returns the raw response body.
     pub fn bytes(&self) -> &[u8] {
         &self.body
     }
+    /// Returns the first matching header value.
+    ///
+    /// ```
+    /// use yam_client::client::Response;
+    /// let response = Response {
+    ///     status: 200,
+    ///     headers: vec![("content-type".into(), "application/json".into())],
+    ///     body: vec![],
+    /// };
+    /// assert_eq!(response.header("Content-Type"), Some("application/json"));
+    /// ```
     pub fn header(&self, name: &str) -> Option<&str> {
         self.headers
             .iter()
@@ -112,6 +149,15 @@ pub struct Body {
 }
 
 impl Body {
+    /// Serializes a value as an `application/json` body.
+    ///
+    /// ```
+    /// use serde_json::json;
+    /// use yam_client::client::Body;
+    /// let body = Body::json(&json!({ "name": "Yam" }))?;
+    /// # let _ = body;
+    /// # Ok::<(), serde_json::Error>(())
+    /// ```
     pub fn json<T: Serialize>(value: &T) -> Result<Self, serde_json::Error> {
         Ok(Self {
             bytes: serde_json::to_vec(value)?,
@@ -119,6 +165,17 @@ impl Body {
         })
     }
 
+    /// Serializes a value as an `application/x-www-form-urlencoded` body.
+    ///
+    /// ```
+    /// use serde::Serialize;
+    /// use yam_client::client::Body;
+    /// #[derive(Serialize)]
+    /// struct Login<'a> { email: &'a str }
+    /// let body = Body::form(&Login { email: "user@example.com" })?;
+    /// # let _ = body;
+    /// # Ok::<(), serde_urlencoded::ser::Error>(())
+    /// ```
     pub fn form<T: Serialize>(value: &T) -> Result<Self, serde_urlencoded::ser::Error> {
         Ok(Self {
             bytes: serde_urlencoded::to_string(value)?.into_bytes(),
@@ -126,6 +183,12 @@ impl Body {
         })
     }
 
+    /// Creates a UTF-8 plain-text body.
+    ///
+    /// ```
+    /// use yam_client::client::Body;
+    /// let body = Body::text("Hello world");
+    /// ```
     pub fn text(value: impl Into<String>) -> Self {
         Self {
             bytes: value.into().into_bytes(),
@@ -133,6 +196,12 @@ impl Body {
         }
     }
 
+    /// Creates a raw byte body without inferring a content type.
+    ///
+    /// ```
+    /// use yam_client::client::Body;
+    /// let body = Body::bytes([0, 1, 2]);
+    /// ```
     pub fn bytes(value: impl Into<Vec<u8>>) -> Self {
         Self {
             bytes: value.into(),
@@ -162,12 +231,28 @@ macro_rules! route_verb {
 
 #[derive(Default)]
 pub struct HttpClientConfig {
+    /// Base URL used when a request is given a relative path.
     pub base_url: Option<String>,
+    /// Maximum duration for the complete request and response exchange.
     pub timeout: Option<Duration>,
+    /// TLS roots and client settings. Web PKI roots are used by default.
     pub tls_configuration: Option<ClientConfig>,
+    /// Headers included with every request can be overridden per request.
     pub headers: Vec<(String, String)>,
 }
 impl HttpClient {
+    /// Creates a client from reusable URL, timeout, TLS, and header defaults.
+    ///
+    /// ```
+    /// use std::time::Duration;
+    /// use yam_client::client::{HttpClient, HttpClientConfig};
+    /// let client = HttpClient::new(HttpClientConfig {
+    ///     base_url: Some("https://example.com/api".into()),
+    ///     timeout: Some(Duration::from_secs(10)),
+    ///     headers: vec![("accept".into(), "application/json".into())],
+    ///     ..Default::default()
+    /// });
+    /// ```
     pub fn new(config: HttpClientConfig) -> Self {
         let tls_configuration = config.tls_configuration.unwrap_or_else(|| {
             let roots = RootCertStore::from_iter(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
@@ -186,11 +271,100 @@ impl HttpClient {
             headers,
         }
     }
-    route_verb!(get=>GET);
-    route_verb!(post=>POST);
-    route_verb!(put=>PUT);
-    route_verb!(patch=>PATCH);
-    route_verb!(delete=>DELETE);
+    route_verb!(
+        #[doc = r#"Sends a GET request.
+
+```no_run
+use yam_client::client::{Error, HttpClient, RequestOptions};
+
+# async fn run() -> Result<(), Error> {
+let client = HttpClient::default();
+let response = client
+    .get("https://example.com/users/42", RequestOptions::default())
+    .await?;
+# let _ = response;
+# Ok(())
+# }
+```"#]
+        get => GET
+    );
+    route_verb!(
+        #[doc = r#"Sends a POST request.
+
+```no_run
+use serde_json::json;
+use yam_client::client::{Body, Error, HttpClient, RequestOptions};
+
+# async fn run() -> Result<(), Error> {
+let client = HttpClient::default();
+let options = RequestOptions {
+    body: Some(Body::json(&json!({ "name": "Yam" }))?),
+    ..Default::default()
+};
+let response = client.post("https://example.com/users", options).await?;
+# let _ = response;
+# Ok(())
+# }
+```"#]
+        post => POST
+    );
+    route_verb!(
+        #[doc = r#"Sends a PUT request.
+
+```no_run
+use serde_json::json;
+use yam_client::client::{Body, Error, HttpClient, RequestOptions};
+
+# async fn run() -> Result<(), Error> {
+let client = HttpClient::default();
+let options = RequestOptions {
+    body: Some(Body::json(&json!({ "name": "New name" }))?),
+    ..Default::default()
+};
+let response = client.put("https://example.com/users/42", options).await?;
+# let _ = response;
+# Ok(())
+# }
+```"#]
+        put => PUT
+    );
+    route_verb!(
+        #[doc = r#"Sends a PATCH request.
+
+```no_run
+use serde_json::json;
+use yam_client::client::{Body, Error, HttpClient, RequestOptions};
+
+# async fn run() -> Result<(), Error> {
+let client = HttpClient::default();
+let options = RequestOptions {
+    body: Some(Body::json(&json!({ "active": true }))?),
+    ..Default::default()
+};
+let response = client.patch("https://example.com/users/42", options).await?;
+# let _ = response;
+# Ok(())
+# }
+```"#]
+        patch => PATCH
+    );
+    route_verb!(
+        #[doc = r#"Sends a DELETE request.
+
+```no_run
+use yam_client::client::{Error, HttpClient, RequestOptions};
+
+# async fn run() -> Result<(), Error> {
+let client = HttpClient::default();
+let response = client
+    .delete("https://example.com/users/42", RequestOptions::default())
+    .await?;
+# let _ = response;
+# Ok(())
+# }
+```"#]
+        delete => DELETE
+    );
 
     async fn request(
         &self,

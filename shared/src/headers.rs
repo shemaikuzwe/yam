@@ -14,6 +14,16 @@ impl Headers {
         Self::default()
     }
 
+    /// Returns the first value associated with `name`.
+    ///
+    /// ```
+    /// use yam_shared::Headers;
+    ///
+    /// let mut headers = Headers::new();
+    /// headers.set("content-type", "application/json".into());
+    ///
+    /// assert_eq!(headers.get("Content-Type"), Some("application/json"));
+    /// ```
     pub fn get(&self, name: &str) -> Option<&str> {
         self.headers
             .get(&name.to_lowercase())?
@@ -21,10 +31,12 @@ impl Headers {
             .map(String::as_str)
     }
 
+    /// Replaces all values associated with `name`.
     pub fn set(&mut self, name: &str, value: String) {
         self.headers.insert(name.to_lowercase(), vec![value]);
     }
 
+    /// Adds a value without replacing values already associated with `name`.
     pub fn append(&mut self, name: &str, value: String) {
         self.headers
             .entry(name.to_lowercase())
@@ -32,6 +44,18 @@ impl Headers {
             .push(value);
     }
 
+    /// Returns all values associated with `name`.
+    ///
+    /// ```
+    /// use yam_shared::Headers;
+    ///
+    /// let mut headers = Headers::new();
+    /// headers.append("accept", "text/html".into());
+    /// headers.append("accept", "application/json".into());
+    ///
+    /// let values = headers.get_all("Accept").collect::<Vec<_>>();
+    /// assert_eq!(values, ["text/html", "application/json"]);
+    /// ```
     pub fn get_all(&self, name: &str) -> impl Iterator<Item = &str> {
         self.headers
             .get(&name.to_lowercase())
@@ -40,6 +64,18 @@ impl Headers {
             .map(String::as_str)
     }
 
+    /// Iterates over every header name and value pair.
+    ///
+    /// Names with multiple values are yielded once for each value.
+    ///
+    /// ```
+    /// use yam_shared::Headers;
+    ///
+    /// let mut headers = Headers::new();
+    /// headers.set("content-length", "12".into());
+    ///
+    /// assert_eq!(headers.iter().collect::<Vec<_>>(), [("content-length", "12")]);
+    /// ```
     pub fn iter(&self) -> impl Iterator<Item = (&str, &str)> {
         self.headers.iter().flat_map(|(name, values)| {
             values
@@ -47,7 +83,6 @@ impl Headers {
                 .map(move |value| (name.as_str(), value.as_str()))
         })
     }
-
     pub fn parse(&mut self, data: &[u8]) -> Result<(usize, bool), HeaderParseError> {
         let mut read = 0;
         let mut done = false;

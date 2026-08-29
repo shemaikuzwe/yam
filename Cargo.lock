@@ -1065,6 +1065,8 @@ name = "yam-router"
 version = "0.1.0"
 dependencies = [
  "matchit",
+ "serde",
+ "serde_json",
  "tokio",
  "yam-server",
 ]

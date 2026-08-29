@@ -39,6 +39,7 @@ pub enum StatusCode {
 }
 
 #[derive(Debug)]
+/// An HTTP response returned by a handler.
 pub struct Response {
     pub status: StatusCode,
     pub headers: Headers,
@@ -46,6 +47,13 @@ pub struct Response {
 }
 
 impl Response {
+    /// Creates a `200 OK` plain-text response with an empty body.
+    ///
+    /// ```
+    /// use yam_server::{Response, StatusCode};
+    /// let response = Response::new();
+    /// assert_eq!(response.status, StatusCode::StatusOk);
+    /// ```
     pub fn new() -> Self {
         let mut headers = Headers::new();
         headers.set("connection", "close".to_string());
@@ -56,22 +64,59 @@ impl Response {
             body: Vec::new(),
         }
     }
+    /// Sets the response status.
+    ///
+    /// ```
+    /// use yam_server::{Response, StatusCode};
+    /// let response = Response::new().status(StatusCode::StatusCreated);
+    /// assert_eq!(response.status, StatusCode::StatusCreated);
+    /// ```
     pub fn status(mut self, status: StatusCode) -> Self {
         self.status = status;
         self
     }
+    /// Sets a response header, replacing existing values with the same name.
+    ///
+    /// ```
+    /// use yam_server::Response;
+    /// let response = Response::new().set("cache-control", "no-store");
+    /// assert_eq!(response.headers.get("cache-control"), Some("no-store"));
+    /// ```
     pub fn set(mut self, key: &str, value: &str) -> Self {
         self.headers.set(key, value.to_string());
         self
     }
+    /// Sets the raw response body.
+    ///
+    /// ```
+    /// use yam_server::Response;
+    /// let response = Response::new().send("Hello world");
+    /// assert_eq!(response.body, b"Hello world");
+    /// ```
     pub fn send(mut self, body: impl Into<Vec<u8>>) -> Self {
         self.body = body.into();
         self
     }
+    /// Serializes a value as JSON and sets the JSON content type.
+    ///
+    /// ```
+    /// use serde_json::json;
+    /// use yam_server::Response;
+    /// let response = Response::new().json(&json!({ "ok": true }))?;
+    /// assert_eq!(response.headers.get("content-type"), Some("application/json"));
+    /// # Ok::<(), serde_json::Error>(())
+    /// ```
     pub fn json(self, body: &impl Serialize) -> Result<Self, serde_json::Error> {
         let body = serde_json::to_vec(body)?;
         Ok(self.set("content-type", "application/json").send(body))
     }
+    /// Appends a `Set-Cookie` header to the response.
+    ///
+    /// ```
+    /// use yam_server::{Cookie, Response};
+    /// let response = Response::new().cookie(Cookie::new("session", "abc123"));
+    /// assert!(response.headers.get("set-cookie").is_some());
+    /// ```
     pub fn cookie(mut self, cookie: Cookie) -> Self {
         self.headers.append("set-cookie", cookie.to_string());
         self

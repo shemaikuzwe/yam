@@ -6,6 +6,7 @@ pub trait Middleware: Send + Sync + 'static {
     fn call(&self, req: Request, next: Next) -> HandlerFuture;
 }
 
+/// The remaining middleware chain and final route handler.
 pub struct Next {
     middlewares: Arc<Vec<Arc<dyn Middleware>>>,
     handler: Arc<dyn Handler>,
@@ -20,6 +21,7 @@ impl Next {
             index: 0,
         }
     }
+    /// Continues processing the request through the remaining middleware.
     pub fn run(self, req: Request) -> HandlerFuture {
         let Some(middleware) = self.middlewares.get(self.index) else {
             return self.handler.call(req);

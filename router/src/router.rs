@@ -9,6 +9,7 @@ use yam_server::{
 
 use crate::middleware::{Middleware, Next};
 
+/// An HTTP router that dispatches requests by method and path.
 pub struct Router {
     routes: HashMap<Method, MatchRouter<Arc<dyn Handler>>>,
     middlewares: Vec<Arc<dyn Middleware>>,
@@ -18,7 +19,9 @@ pub struct Router {
 
 #[derive(Default)]
 pub struct RouterConfig {
+    /// When `true`, routes /users/ and /users are completely different.
     pub strict_trailing_slash: bool,
+    /// A prefix added to every registered route, such as `/api/v1`.
     pub route_prefix: String,
 }
 
@@ -37,6 +40,15 @@ macro_rules! route_verb {
 }
 
 impl Router {
+    ///
+    /// ```
+    /// use yam_router::router::{Router, RouterConfig};
+    ///
+    /// let router = Router::new(RouterConfig {
+    ///     route_prefix: "/api/v1".into(),
+    ///     ..Default::default()
+    /// });
+    /// ```
     pub fn new(config: RouterConfig) -> Router {
         Router {
             routes: HashMap::new(),
@@ -45,11 +57,112 @@ impl Router {
             route_prefix: config.route_prefix,
         }
     }
-    route_verb!(get => GET);
-    route_verb!(post => POST);
-    route_verb!(put => PUT);
-    route_verb!(patch => PATCH);
-    route_verb!(delete => DELETE);
+    route_verb!(
+        #[doc = "```"]
+        #[doc = "use yam_router::router::Router;"]
+        #[doc = ""]
+        #[doc = "let mut app = Router::new(Default::default());"]
+        #[doc = ""]
+        #[doc = "app.get(\"/\", async |_request| {"]
+        #[doc = "    \"Hello world\""]
+        #[doc = "});"]
+        #[doc = "```"]
+        get => GET
+    );
+    route_verb!(
+        #[doc = "```"]
+        #[doc = "use serde::Deserialize;"]
+        #[doc = "use serde_json::json;"]
+        #[doc = "use yam_router::router::Router;"]
+        #[doc = "use yam_server::{HttpError, Request, Response, StatusCode};"]
+        #[doc = ""]
+        #[doc = "#[derive(Deserialize)]"]
+        #[doc = "struct CreateUser { email: String }"]
+        #[doc = ""]
+        #[doc = "let mut app = Router::new(Default::default());"]
+        #[doc = "app.post(\"/users\", async |request: Request| -> Result<Response, HttpError> {"]
+        #[doc = "    let input: CreateUser = request.json()?;"]
+        #[doc = "    Ok(Response::new()"]
+        #[doc = "        .status(StatusCode::StatusCreated)"]
+        #[doc = "        .json(&json!({ \"id\": 42, \"email\": input.email }))?)"]
+        #[doc = "});"]
+        #[doc = "```"]
+        post => POST
+    );
+    route_verb!(
+        #[doc = "```"]
+        #[doc = "use serde::Deserialize;"]
+        #[doc = "use serde_json::json;"]
+        #[doc = "use yam_router::router::Router;"]
+        #[doc = "use yam_server::{HttpError, Request};"]
+        #[doc = ""]
+        #[doc = "#[derive(Deserialize)]"]
+        #[doc = "struct ReplaceUser { email: String, name: String }"]
+        #[doc = ""]
+        #[doc = "let mut app = Router::new(Default::default());"]
+        #[doc = "app.put(\"/users/{id}\", async |request: Request| -> Result<serde_json::Value, HttpError> {"]
+        #[doc = "    let id: u64 = request.param_as(\"id\")?;"]
+        #[doc = "    let input: ReplaceUser = request.json()?;"]
+        #[doc = "    let user = json!({ \"id\": id, \"email\": input.email, \"name\": input.name });"]
+        #[doc = "    Ok(user)"]
+        #[doc = "});"]
+        #[doc = "```"]
+        put => PUT
+    );
+    route_verb!(
+        #[doc = "```"]
+        #[doc = "use serde::Deserialize;"]
+        #[doc = "use serde_json::json;"]
+        #[doc = "use yam_router::router::Router;"]
+        #[doc = "use yam_server::{HttpError, Request};"]
+        #[doc = ""]
+        #[doc = "#[derive(Deserialize)]"]
+        #[doc = "struct UpdateUser { name: Option<String> }"]
+        #[doc = ""]
+        #[doc = "let mut app = Router::new(Default::default());"]
+        #[doc = "app.patch(\"/users/{id}\", async |request: Request| -> Result<serde_json::Value, HttpError> {"]
+        #[doc = "    let id: u64 = request.param_as(\"id\")?;"]
+        #[doc = "    let input: UpdateUser = request.json()?;"]
+        #[doc = "    Ok(json!({"]
+        #[doc = "        \"id\": id,"]
+        #[doc = "        \"name\": input.name,"]
+        #[doc = "    }))"]
+        #[doc = "});"]
+        #[doc = "```"]
+        patch => PATCH
+    );
+    route_verb!(
+        #[doc = "```"]
+        #[doc = "use yam_router::router::Router;"]
+        #[doc = "use yam_server::{Request, Response, StatusCode};"]
+        #[doc = ""]
+        #[doc = "let mut app = Router::new(Default::default());"]
+        #[doc = "app.delete(\"/users/{id}\", async |request: Request| {"]
+        #[doc = "    let id: u64 = request.param_as(\"id\")?;"]
+        #[doc = "    // Delete the user identified by `id` from storage."]
+        #[doc = "    let _ = id;"]
+        #[doc = "    Ok(Response::new().status(StatusCode::StatusNoContent))"]
+        #[doc = "});"]
+        #[doc = "```"]
+        delete => DELETE
+    );
+
+    /// Appends middleware that will wrap every matched route.
+    ///
+    /// Call [`Next::run`] to continue to the next middleware or route handler.
+    ///
+    /// ```
+    /// use yam_router::{Next, router::Router};
+    /// use yam_server::Request;
+    ///
+    /// let mut app = Router::new(Default::default());
+    /// app.middleware(async |request: Request, next: Next| {
+    ///     println!("before handler");
+    ///     let response = next.run(request).await?;
+    ///     println!("after handler");
+    ///     Ok(response)
+    /// });
+    /// ```
     pub fn middleware<M>(&mut self, middleware: M)
     where
         M: Middleware,
@@ -65,6 +178,20 @@ impl Router {
             .insert(path, Arc::new(handler))
             .unwrap_or_else(|err| panic!("Failed to register route: {err}"))
     }
+    /// Serves router on an already-bound TCP listener.
+    ///
+    /// ```no_run
+    /// use tokio::net::TcpListener;
+    /// use yam_router::router::Router;
+    ///
+    /// # async fn run() -> std::io::Result<()> {
+    /// let mut app = Router::new(Default::default());
+    /// app.get("/", async |_| "Hello world");
+    ///
+    /// let listener = TcpListener::bind("localhost:3000").await?;
+    /// app.serve(listener).await
+    /// # }
+    /// ```
     pub async fn serve(self, listener: TcpListener) -> io::Result<()> {
         Server::serve(listener, self).await
     }

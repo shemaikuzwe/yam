@@ -153,21 +153,73 @@ impl Request {
 
 //deserialization
 impl Request {
+    /// Deserializes the request body as JSON.
+    ///
+    /// ```
+    /// use serde::Deserialize;
+    /// use yam_server::Request;
+    ///
+    /// #[derive(Deserialize)]
+    /// struct Login { email: String }
+    ///
+    /// let mut request = Request::new();
+    /// request.body = br#"{"email":"user@example.com"}"#.to_vec();
+    /// let login: Login = request.json()?;
+    /// assert_eq!(login.email, "user@example.com");
+    /// # Ok::<(), serde_json::Error>(())
+    /// ```
     pub fn json<T>(&self) -> Result<T, serde_json::Error>
     where
         T: DeserializeOwned,
     {
         serde_json::from_slice(&self.body)
     }
+    /// Reads the request body as UTF-8 text.
+    ///
+    /// ```
+    /// use yam_server::Request;
+    /// let mut request = Request::new();
+    /// request.body = b"hello".to_vec();
+    /// assert_eq!(request.text()?, "hello");
+    /// # Ok::<(), std::str::Utf8Error>(())
+    /// ```
     pub fn text(&self) -> Result<&str, std::str::Utf8Error> {
         std::str::from_utf8(&self.body)
     }
+    /// Deserializes an `application/x-www-form-urlencoded` request body.
+    ///
+    /// ```
+    /// use serde::Deserialize;
+    /// use yam_server::Request;
+    /// #[derive(Deserialize)]
+    /// struct Login { email: String }
+    ///
+    /// let mut request = Request::new();
+    /// request.body = b"email=user%40example.com".to_vec();
+    /// let login: Login = request.form_data()?;
+    /// assert_eq!(login.email, "user@example.com");
+    /// # Ok::<(), serde_urlencoded::de::Error>(())
+    /// ```
     pub fn form_data<T>(&self) -> Result<T, serde_urlencoded::de::Error>
     where
         T: DeserializeOwned,
     {
         serde_urlencoded::from_bytes(&self.body)
     }
+    /// Deserializes URL query parameters into a typed value.
+    ///
+    /// ```
+    /// use serde::Deserialize;
+    /// use yam_server::Request;
+    /// #[derive(Deserialize)]
+    /// struct Pagination { page: u64 }
+    ///
+    /// let mut request = Request::new();
+    /// request.parse(b"GET /users?page=2 HTTP/1.1\r\n\r\n")?;
+    /// let pagination: Pagination = request.query()?;
+    /// assert_eq!(pagination.page, 2);
+    /// # Ok::<(), Box<dyn std::error::Error>>(())
+    /// ```
     pub fn query<T>(&self) -> Result<T, serde_urlencoded::de::Error>
     where
         T: DeserializeOwned,
@@ -196,9 +248,28 @@ impl Request {
             .map(|line| line.http_version.as_str())
     }
 
+    /// Returns a path parameter captured by a router pattern.
+    ///
+    /// ```no_run
+    /// # use yam_server::Request;
+    /// # fn handler(request: Request) {
+    /// let id = request.param("id");
+    /// # let _ = id;
+    /// # }
+    /// ```
     pub fn param(&self, name: &str) -> Option<&str> {
         self.path_params.get(name).map(String::as_str)
     }
+    /// Parses a captured path parameter as `T`.
+    ///
+    /// ```no_run
+    /// # use yam_server::{Error, Request};
+    /// # fn handler(request: Request) -> Result<(), Error> {
+    /// let id: u64 = request.param_as("id")?;
+    /// # let _ = id;
+    /// # Ok(())
+    /// # }
+    /// ```
     pub fn param_as<T>(&self, name: &str) -> Result<T, Error>
     where
         T: FromStr,
@@ -216,6 +287,14 @@ impl Request {
     pub fn set_params(&mut self, params: HashMap<String, String>) {
         self.path_params = params
     }
+    /// Returns a cookie value from the request's `Cookie` headers.
+    ///
+    /// ```
+    /// use yam_server::Request;
+    /// let mut request = Request::new();
+    /// request.headers.set("cookie", "session=abc123".into());
+    /// assert_eq!(request.cookie("session"), Some("abc123"));
+    /// ```
     pub fn cookie(&self, name: &str) -> Option<&str> {
         self.headers
             .get_all("cookie")
