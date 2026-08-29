@@ -1,6 +1,7 @@
 # Yam
-
 Yam is a minimal http client,router and server:
+
+> **⚠️ Warning:** This project is meant for learning purposes only. It is **not** meant for production use.
 
 ## Router
 Heavily inspired by [express](https://expressjs.com/)
