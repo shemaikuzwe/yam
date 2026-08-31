@@ -34,7 +34,7 @@ async fn should_send_json_response() {
         name: "john doe".to_string(),
         email: "john@example.com".to_string(),
     };
-    let response = Response::new().json(&user).unwrap();
+    let response = Response::new().json(&user);
     ResponseWriter::new(&mut output)
         .send_response(response)
         .await

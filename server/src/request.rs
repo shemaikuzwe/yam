@@ -10,17 +10,18 @@ use thiserror::Error;
 use tokio::io::{AsyncRead, AsyncReadExt};
 
 use crate::headers::Headers;
+use crate::response::HttpError;
 use yam_shared::HeaderParseError;
 
 #[derive(Debug)]
 pub struct Request {
-    request_line: Option<RequestLine>,
+    request_line: RequestLine,
     pub headers: Headers,
     pub body: Vec<u8>,
     path_params: HashMap<String, String>,
     parse_state: ParseState,
 }
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub struct RequestLine {
     pub http_version: String,
     pub request_target: String,
@@ -75,7 +76,7 @@ impl Request {
             body: Vec::new(),
             parse_state: ParseState::INIT,
             path_params: HashMap::new(),
-            request_line: None,
+            request_line: RequestLine::default(),
         }
     }
     fn done(&self) -> bool {
@@ -109,7 +110,7 @@ impl Request {
                     if result.1 == 0 {
                         return Ok(result.1);
                     }
-                    self.request_line = Some(result.0);
+                    self.request_line = result.0;
                     read += result.1;
                     self.parse_state = ParseState::HEADERS
                 }
@@ -163,7 +164,7 @@ impl Request {
     ///
     /// ```
     /// use serde::Deserialize;
-    /// use yam_server::Request;
+    /// use yam_server::{HttpError, Request};
     ///
     /// #[derive(Deserialize)]
     /// struct Login { email: String }
@@ -172,31 +173,31 @@ impl Request {
     /// request.body = br#"{"email":"user@example.com"}"#.to_vec();
     /// let login: Login = request.json()?;
     /// assert_eq!(login.email, "user@example.com");
-    /// # Ok::<(), serde_json::Error>(())
+    /// # Ok::<(), HttpError>(())
     /// ```
-    pub fn json<T>(&self) -> Result<T, serde_json::Error>
+    pub fn json<T>(&self) -> Result<T, HttpError>
     where
         T: DeserializeOwned,
     {
-        serde_json::from_slice(&self.body)
+        serde_json::from_slice(&self.body).map_err(HttpError::Json)
     }
     /// Reads the request body as UTF-8 text.
-    ///
     /// ```
-    /// use yam_server::Request;
+    /// use yam_server::{HttpError, Request};
     /// let mut request = Request::new();
     /// request.body = b"hello".to_vec();
     /// assert_eq!(request.text()?, "hello");
-    /// # Ok::<(), std::str::Utf8Error>(())
+    /// # Ok::<(), HttpError>(())
     /// ```
-    pub fn text(&self) -> Result<&str, std::str::Utf8Error> {
-        std::str::from_utf8(&self.body)
+    pub fn text(&self) -> Result<&str, HttpError> {
+        std::str::from_utf8(&self.body).map_err(HttpError::Utf8)
     }
     /// Deserializes an `application/x-www-form-urlencoded` request body.
+    /// Returns 400 BadRequest when an error occur.
     ///
     /// ```
     /// use serde::Deserialize;
-    /// use yam_server::Request;
+    /// use yam_server::{HttpError, Request};
     /// #[derive(Deserialize)]
     /// struct Login { email: String }
     ///
@@ -204,19 +205,19 @@ impl Request {
     /// request.body = b"email=user%40example.com".to_vec();
     /// let login: Login = request.form_data()?;
     /// assert_eq!(login.email, "user@example.com");
-    /// # Ok::<(), serde_urlencoded::de::Error>(())
+    /// # Ok::<(), HttpError>(())
     /// ```
-    pub fn form_data<T>(&self) -> Result<T, serde_urlencoded::de::Error>
+    pub fn form_data<T>(&self) -> Result<T, HttpError>
     where
         T: DeserializeOwned,
     {
-        serde_urlencoded::from_bytes(&self.body)
+        serde_urlencoded::from_bytes(&self.body).map_err(HttpError::Form)
     }
     /// Deserializes URL query parameters into a typed value.
     ///
     /// ```
     /// use serde::Deserialize;
-    /// use yam_server::Request;
+    /// use yam_server::{HttpError, Request};
     /// #[derive(Deserialize)]
     /// struct Pagination { page: u64 }
     ///
@@ -224,34 +225,26 @@ impl Request {
     /// request.parse(b"GET /users?page=2 HTTP/1.1\r\n\r\n")?;
     /// let pagination: Pagination = request.query()?;
     /// assert_eq!(pagination.page, 2);
-    /// # Ok::<(), Box<dyn std::error::Error>>(())
+    /// # Ok::<(), HttpError>(())
     /// ```
-    pub fn query<T>(&self) -> Result<T, serde_urlencoded::de::Error>
+    pub fn query<T>(&self) -> Result<T, HttpError>
     where
         T: DeserializeOwned,
     {
-        let query = self
-            .request_line
-            .as_ref()
-            .map(|line| line.query.as_str())
-            .unwrap_or("");
-        serde_urlencoded::from_str(query)
+        let query = &self.request_line.query.as_str();
+        serde_urlencoded::from_str(query).map_err(HttpError::Form)
     }
 
-    pub fn method(&self) -> Option<&str> {
-        self.request_line.as_ref().map(|line| line.method.as_str())
+    pub fn method(&self) -> &str {
+        &self.request_line.method.as_str()
     }
 
-    pub fn path(&self) -> Option<&str> {
-        self.request_line
-            .as_ref()
-            .map(|line| line.request_target.as_str())
+    pub fn path(&self) -> &str {
+        &self.request_line.request_target.as_str()
     }
 
-    pub fn http_version(&self) -> Option<&str> {
-        self.request_line
-            .as_ref()
-            .map(|line| line.http_version.as_str())
+    pub fn http_version(&self) -> &str {
+        &self.request_line.http_version.as_str()
     }
 
     /// Returns a path parameter captured by a router pattern.
@@ -276,7 +269,7 @@ impl Request {
     /// # Ok(())
     /// # }
     /// ```
-    pub fn param_as<T>(&self, name: &str) -> Result<T, Error>
+    pub fn param_as<T>(&self, name: &str) -> Result<T, HttpError>
     where
         T: FromStr,
     {
@@ -315,8 +308,6 @@ pub enum Error {
     Io(#[from] io::Error),
     #[error("parse error: {0}")]
     Parse(#[from] ParseError),
-    #[error("{0}")]
-    Param(#[from] ParamError),
     #[error("request too large")]
     RequestTooLarge,
     #[error("unexpected end of input")]
@@ -503,7 +494,7 @@ mod tests {
     fn should_desirialize_valid_json() {
         let request = Request {
             path_params: HashMap::new(),
-            request_line: None,
+            request_line: RequestLine::default(),
             headers: Headers::new(),
             body: br#"{"email":"user@example.com","password":"1234"}"#.to_vec(),
             parse_state: ParseState::DONE,
@@ -559,12 +550,12 @@ mod tests {
             per_page: Option<u64>,
         }
         let mut request = Request::new();
-        request.request_line = Some(RequestLine {
+        request.request_line = RequestLine {
             http_version: "1.1".into(),
             request_target: "/list".into(),
             query: "page=2&per_page=30".into(),
             method: "GET".into(),
-        });
+        };
         let pagination: Pagination = request.query().expect("valid query should deserialize");
         assert_eq!(
             pagination,
@@ -582,12 +573,12 @@ mod tests {
             per_page: Option<u64>,
         }
         let mut request = Request::new();
-        request.request_line = Some(RequestLine {
+        request.request_line = RequestLine {
             http_version: "1.1".into(),
             request_target: "/list".into(),
             query: "".into(),
             method: "GET".into(),
-        });
+        };
         let pagination: Pagination = request.query().expect("empty query should deserialize");
         assert_eq!(
             pagination,
@@ -604,12 +595,12 @@ mod tests {
             _page: u64,
         }
         let mut request = Request::new();
-        request.request_line = Some(RequestLine {
+        request.request_line = RequestLine {
             http_version: "1.1".into(),
             request_target: "/list".into(),
             query: "page=hi".into(),
             method: "GET".into(),
-        });
+        };
         assert!(request.query::<Pagination>().is_err());
     }
     #[test]
@@ -619,12 +610,12 @@ mod tests {
             q: String,
         }
         let mut request = Request::new();
-        request.request_line = Some(RequestLine {
+        request.request_line = RequestLine {
             http_version: "1.1".into(),
             request_target: "/search".into(),
             query: "q=hello%20world".into(),
             method: "GET".into(),
-        });
+        };
         let search: Search = request
             .query()
             .expect("percent encoded query should deserialize");
@@ -654,7 +645,7 @@ mod tests {
 
         assert!(matches!(
         request.param_as::<u64>("id"),
-        Err(Error::Param(ParamError::Invalid(name))) if name == "id"
+        Err(HttpError::Param(ParamError::Invalid(name))) if name == "id"
          ));
     }
 
@@ -664,7 +655,7 @@ mod tests {
 
         assert!(matches!(
             request.param_as::<u64>("id"),
-            Err(Error::Param(ParamError::Missing(name))) if name == "id"
+            Err(HttpError::Param(ParamError::Missing(name))) if name == "id"
         ));
     }
 }

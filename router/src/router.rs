@@ -84,7 +84,7 @@ impl Router {
         #[doc = "    let input: CreateUser = request.json()?;"]
         #[doc = "    Ok(Response::new()"]
         #[doc = "        .status(StatusCode::StatusCreated)"]
-        #[doc = "        .json(&json!({ \"id\": 42, \"email\": input.email }))?)"]
+        #[doc = "        .json(&json!({ \"id\": 42, \"email\": input.email })))"]
         #[doc = "});"]
         #[doc = "```"]
         post => POST
@@ -207,15 +207,8 @@ impl Router {
 
 impl Handler for Router {
     fn call(&self, mut req: Request) -> HandlerFuture {
-        let (Some(path), Some(method)) = (req.path(), req.method()) else {
-            return Box::pin(async move {
-                Ok(Response::new()
-                    .status(StatusCode::StatusBadRequest)
-                    .send("Bad request"))
-            });
-        };
-        let path = self.normalize_path(path);
-        let method = match Method::try_from(method) {
+        let path = self.normalize_path(req.path());
+        let method = match Method::try_from(req.method()) {
             Ok(method) => method,
             Err(_) => {
                 return Box::pin(async move {

@@ -66,8 +66,8 @@ async fn test_full_request() {
         .headers
         .get("host")
         .expect("Should have host header");
-    assert_eq!(request.method(), Some("POST"));
-    assert_eq!(request.path(), Some("/submit"));
+    assert_eq!(request.method(), "POST");
+    assert_eq!(request.path(), "/submit");
     assert_eq!(host, "localhost:42069");
     assert_eq!(request.body, b"hello world!\n");
 }
@@ -92,10 +92,10 @@ async fn multiple_request_in_stream() {
         .handle_request()
         .await
         .expect("Should parse request 2");
-    assert_eq!(request1.method(), Some("GET"));
-    assert_eq!(request1.path(), Some("/"));
-    assert_eq!(request2.method(), Some("GET"));
-    assert_eq!(request2.path(), Some("/about"))
+    assert_eq!(request1.method(), "GET");
+    assert_eq!(request1.path(), "/");
+    assert_eq!(request2.method(), "GET");
+    assert_eq!(request2.path(), "/about")
 }
 
 #[tokio::test]

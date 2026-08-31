@@ -4,7 +4,11 @@ use serde::Serialize;
 use thiserror::Error;
 use tokio::io::{AsyncWrite, AsyncWriteExt};
 
-use crate::{cookie::Cookie, headers::Headers, request};
+use crate::{
+    cookie::Cookie,
+    headers::Headers,
+    request::{self, ParamError},
+};
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum StatusCode {
@@ -106,13 +110,16 @@ impl Response {
     /// ```
     /// use serde_json::json;
     /// use yam_server::Response;
-    /// let response = Response::new().json(&json!({ "ok": true }))?;
+    /// let response = Response::new().json(&json!({ "ok": true }));
     /// assert_eq!(response.headers.get("content-type"), Some("application/json"));
-    /// # Ok::<(), serde_json::Error>(())
     /// ```
-    pub fn json(self, body: &impl Serialize) -> Result<Self, serde_json::Error> {
-        let body = serde_json::to_vec(body)?;
-        Ok(self.set("content-type", "application/json").send(body))
+    pub fn json(self, body: &impl Serialize) -> Self {
+        match serde_json::to_vec(body) {
+            Ok(body) => self.set("content-type", "application/json").send(body),
+            Err(err) => Response::new()
+                .status(StatusCode::StatusInternalServerError)
+                .send(format!("failed to serialize response: {err}")),
+        }
     }
     /// Appends a `Set-Cookie` header to the response.
     ///
@@ -131,7 +138,7 @@ pub trait IntoResponse {
     fn into_response(self) -> Response;
 }
 
-impl<R: IntoResponse> IntoResponse for Result<R, HttpError> {
+impl<T: IntoResponse, E: IntoResponse> IntoResponse for Result<T, E> {
     fn into_response(self) -> Response {
         match self {
             Ok(r) => r.into_response(),
@@ -235,7 +242,7 @@ impl<W: AsyncWrite + Unpin> ResponseWriter<W> {
         .await
     }
     pub async fn json(self, body: &impl Serialize) -> Result<(), HttpError> {
-        let response = Response::new().json(body)?;
+        let response = Response::new().json(body);
         self.send_response(response).await
     }
 }
@@ -253,6 +260,12 @@ pub enum HttpError {
 
     #[error("Invalid form body: {0}")]
     Form(#[from] serde_urlencoded::de::Error),
+
+    #[error("Invalid UTF-8 body: {0}")]
+    Utf8(#[from] std::str::Utf8Error),
+
+    #[error("{0}")]
+    Param(#[from] ParamError),
 }
 
 impl HttpError {
@@ -268,9 +281,11 @@ impl HttpError {
             HttpError::Request(request::Error::Parse(
                 request::ParseError::UnsupportedHttpVersion,
             )) => StatusCode::StatusHttpVersionNotSupported,
-            HttpError::Json(_) | HttpError::Form(_) | HttpError::Request(_) => {
-                StatusCode::StatusBadRequest
-            }
+            HttpError::Json(_)
+            | HttpError::Form(_)
+            | HttpError::Utf8(_)
+            | HttpError::Request(_)
+            | HttpError::Param(_) => StatusCode::StatusBadRequest,
         }
     }
 }
