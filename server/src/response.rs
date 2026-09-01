@@ -172,6 +172,33 @@ impl IntoResponse for serde_json::Value {
             .send(self.to_string())
     }
 }
+/// Serializes the wrapped value as a JSON response body.
+///
+/// ```
+/// use serde::Serialize;
+/// use yam_server::{HttpError, IntoResponse, Json, StatusCode};
+///
+/// #[derive(Serialize)]
+/// struct User { id: u32 }
+///
+/// fn get_users() -> Result<Json<Vec<UserSelect>>, HttpError> {
+///     Ok(Json(vec![User { id: 1 }]))
+/// }
+///
+/// let response = get_users().into_response();
+/// assert_eq!(response.status, StatusCode::StatusOk);
+/// assert_eq!(response.body, br#"[{"id":1}]"#);
+/// ```
+#[derive(Debug)]
+pub struct Json<T>(pub T);
+
+impl<T: Serialize> IntoResponse for Json<T> {
+    fn into_response(self) -> Response {
+        Response::new()
+            .set("content-type", "application/json")
+            .json(&self.0)
+    }
+}
 
 #[derive(Debug)]
 pub struct ResponseWriter<W: AsyncWrite> {

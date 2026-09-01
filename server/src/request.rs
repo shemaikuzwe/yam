@@ -222,7 +222,7 @@ impl Request {
     /// struct Pagination { page: u64 }
     ///
     /// let mut request = Request::new();
-    /// request.parse(b"GET /users?page=2 HTTP/1.1\r\n\r\n")?;
+    /// request.parse(b"GET /users?page=2 HTTP/1.1\r\n\r\n").unwrap();
     /// let pagination: Pagination = request.query()?;
     /// assert_eq!(pagination.page, 2);
     /// # Ok::<(), HttpError>(())
@@ -262,8 +262,8 @@ impl Request {
     /// Parses a captured path parameter as `T`.
     ///
     /// ```no_run
-    /// # use yam_server::{Error, Request};
-    /// # fn handler(request: Request) -> Result<(), Error> {
+    /// # use yam_server::{HttpError, Request};
+    /// # fn handler(request: Request) -> Result<(), HttpError> {
     /// let id: u64 = request.param_as("id")?;
     /// # let _ = id;
     /// # Ok(())

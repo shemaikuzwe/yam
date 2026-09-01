@@ -25,6 +25,5 @@ pub use headers::Headers;
 
 pub use cookie::{Cookie, SameSite};
 pub use request::{Error, Request, RequestLine};
-pub use response::HttpError;
-pub use response::{IntoResponse, Response, ResponseWriter, StatusCode};
+pub use response::{HttpError, IntoResponse, Json, Response, ResponseWriter, StatusCode};
 pub use server::{Handler, HandlerFuture, Server};
