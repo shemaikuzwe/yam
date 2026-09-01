@@ -135,10 +135,10 @@ impl Router {
     route_verb!(
         #[doc = "```"]
         #[doc = "use yam_router::router::Router;"]
-        #[doc = "use yam_server::{Request, Response, StatusCode};"]
+        #[doc = "use yam_server::{HttpError, Request, Response, StatusCode};"]
         #[doc = ""]
         #[doc = "let mut app = Router::new(Default::default());"]
-        #[doc = "app.delete(\"/users/{id}\", async |request: Request| {"]
+        #[doc = "app.delete(\"/users/{id}\", async |request: Request| -> Result<Response, HttpError> {"]
         #[doc = "    let id: u64 = request.param_as(\"id\")?;"]
         #[doc = "    // Delete the user identified by `id` from storage."]
         #[doc = "    let _ = id;"]

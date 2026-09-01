@@ -9,8 +9,8 @@ use serde::de::DeserializeOwned;
 use thiserror::Error;
 use tokio::io::{AsyncRead, AsyncReadExt};
 
-use crate::headers::Headers;
 use crate::response::HttpError;
+use crate::{headers::Headers, request_ext::Extensions};
 use yam_shared::HeaderParseError;
 
 #[derive(Debug)]
@@ -20,6 +20,7 @@ pub struct Request {
     pub body: Vec<u8>,
     path_params: HashMap<String, String>,
     parse_state: ParseState,
+    extensions: Extensions,
 }
 #[derive(Debug, Default)]
 pub struct RequestLine {
@@ -77,6 +78,7 @@ impl Request {
             parse_state: ParseState::INIT,
             path_params: HashMap::new(),
             request_line: RequestLine::default(),
+            extensions: Extensions::default(),
         }
     }
     fn done(&self) -> bool {
@@ -301,6 +303,36 @@ impl Request {
             .filter_map(|cookie| cookie.trim().split_once('='))
             .find_map(|(cookie_name, value)| (cookie_name.trim() == name).then_some(value.trim()))
     }
+    /// Returns a reference to the request's [`Extensions`].
+    ///
+    /// ```
+    /// use yam_server::Request;
+    ///
+    /// #[derive(Debug, PartialEq)]
+    /// struct AuthUser { id: u64 }
+    ///
+    /// let mut request = Request::new();
+    /// request.extensions_mut().insert(AuthUser { id: 1 });
+    ///
+    /// assert_eq!(request.extensions().get::<AuthUser>(), Some(&AuthUser { id: 1 }));
+    /// ```
+    pub fn extensions(&self) -> &Extensions {
+        &self.extensions
+    }
+    /// Returns a mutable reference to the request's [`Extensions`].
+    ///
+    /// ```
+    /// use yam_server::Request;
+    ///
+    /// #[derive(Debug, PartialEq)]
+    /// struct AuthUser { id: u64 }
+    ///
+    /// let mut request = Request::new();
+    /// request.extensions_mut().insert(AuthUser { id: 1 });
+    /// ```
+    pub fn extensions_mut(&mut self) -> &mut Extensions {
+        &mut self.extensions
+    }
 }
 #[derive(Debug, Error)]
 pub enum Error {
@@ -445,6 +477,11 @@ mod tests {
         email: String,
         password: String,
     }
+
+    #[derive(Debug, PartialEq)]
+    struct AuthUser {
+        id: u64,
+    }
     #[test]
     fn should_parse_request_line() {
         let result =
@@ -498,6 +535,7 @@ mod tests {
             headers: Headers::new(),
             body: br#"{"email":"user@example.com","password":"1234"}"#.to_vec(),
             parse_state: ParseState::DONE,
+            extensions: Extensions::default(),
         };
         let login: Login = request.json().expect("Should be desirialized");
         assert_eq!(login.email, "user@example.com");
@@ -657,5 +695,33 @@ mod tests {
             request.param_as::<u64>("id"),
             Err(HttpError::Param(ParamError::Missing(name))) if name == "id"
         ));
+    }
+
+    #[test]
+    fn should_store_and_read_extensions() {
+        let mut request = Request::new();
+        request.extensions_mut().insert(AuthUser { id: 1 });
+        request.extensions_mut().insert(String::from("token"));
+
+        assert_eq!(
+            request.extensions().get::<AuthUser>(),
+            Some(&AuthUser { id: 1 })
+        );
+        assert_eq!(
+            request.extensions().get::<String>().map(String::as_str),
+            Some("token")
+        );
+    }
+
+    #[test]
+    fn should_remove_extension_from_request() {
+        let mut request = Request::new();
+        request.extensions_mut().insert(AuthUser { id: 7 });
+
+        assert_eq!(
+            request.extensions_mut().remove::<AuthUser>(),
+            Some(AuthUser { id: 7 })
+        );
+        assert_eq!(request.extensions().get::<AuthUser>(), None);
     }
 }

@@ -181,7 +181,7 @@ impl IntoResponse for serde_json::Value {
 /// #[derive(Serialize)]
 /// struct User { id: u32 }
 ///
-/// fn get_users() -> Result<Json<Vec<UserSelect>>, HttpError> {
+/// fn get_users() -> Result<Json<Vec<User>>, HttpError> {
 ///     Ok(Json(vec![User { id: 1 }]))
 /// }
 ///

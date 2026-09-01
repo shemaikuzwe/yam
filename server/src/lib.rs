@@ -20,10 +20,11 @@ pub mod headers;
 pub mod request;
 pub mod response;
 pub mod server;
-
 pub use headers::Headers;
+mod request_ext;
 
 pub use cookie::{Cookie, SameSite};
 pub use request::{Error, Request, RequestLine};
+pub use request_ext::Extensions;
 pub use response::{HttpError, IntoResponse, Json, Response, ResponseWriter, StatusCode};
 pub use server::{Handler, HandlerFuture, Server};
