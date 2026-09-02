@@ -1,26 +1,40 @@
 [package]
-name = "yam"
-description = "http server,router and client"
-version = "0.1.0"
-edition = "2024"
+name = "yam-http"
+description = "Minimal HTTP server,router and client"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
 
 
 [workspace]
 resolver = "3"
 members = [".", "shared", "server", "router", "client"]
 
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+repository = "https://github.com/shemaikuzwe/yam"
+
+[workspace.dependencies]
+yam-shared = { path = "shared", version = "0.1.0" }
+yam-server = { path = "server", version = "0.1.0" }
+yam-router = { path = "router", version = "0.1.0" }
+yam-client = { path = "client", version = "0.1.0" }
+
 [dependencies]
-yam-server = { path = "server", optional = true }
-yam-router = { path = "router", optional = true }
-yam-client = { path = "client", optional = true }
+yam-server = { workspace = true, optional = true }
+yam-router = { workspace = true, optional = true }
+yam-client = { workspace = true, optional = true }
 
 [dev-dependencies]
-tokio = { version="1.52.3", features=["full"] }
+tokio = { version="1.52.3", features=["net", "io-util", "macros", "rt-multi-thread", "time"] }
 serde ={ version= "1.0.228", features = ["derive"] }
 serde_json = "1.0.150"
 
 [features]
-default = ["server", "router", "client"]
+default = ["server", "router"]
 server  = ["dep:yam-server"]
 router  = ["dep:yam-router", "server"]
 client  = ["dep:yam-client"]

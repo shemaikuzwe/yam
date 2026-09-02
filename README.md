@@ -3,6 +3,24 @@ Yam is a minimal http client,router and server:
 
 > **⚠️ Warning:** This project is meant for learning purposes only. It is **not** meant for production use.
 
+## Installation
+
+```sh
+cargo add yam-http
+```
+
+This enables the default features, `server` and `router`. The client is opt-in:
+
+```sh
+cargo add yam --features client
+```
+
+| Feature | Default | Provides |
+| --- | --- | --- |
+| `server` | yes | `yam::server` |
+| `router` | yes | `yam::router` (enables `server`) |
+| `client` | no | `yam::client` |
+
 ## Router
 Heavily inspired by [express](https://expressjs.com/)
 

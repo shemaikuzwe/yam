@@ -52,6 +52,8 @@ pub enum ParseError {
     InvalidHeaderKey,
     #[error("invalid content-length header")]
     InvalidContentLengthHeader,
+    #[error("request too large")]
+    RequestTooLarge,
 }
 
 impl From<HeaderParseError> for ParseError {
@@ -131,6 +133,7 @@ impl Request {
                     }
                 }
                 ParseState::BODY => {
+                    const MAX_BODY_SIZE: usize = 2 * 1024 * 1024;
                     let length = self
                         .headers
                         .get("content-length")
@@ -140,6 +143,9 @@ impl Request {
                     if length == 0 {
                         self.parse_state = ParseState::DONE;
                         return Ok(read);
+                    }
+                    if length > MAX_BODY_SIZE {
+                        return Err(ParseError::RequestTooLarge);
                     }
                     let remaining = min(curr_data.len(), length - self.body.len());
                     self.body.extend_from_slice(&curr_data[..remaining]);
@@ -366,7 +372,7 @@ pub enum Method {
 
 pub struct RequestReader<R> {
     reader: R,
-    buffer: [u8; 1024],
+    buffer: [u8; 8192],
     buffer_index: usize,
 }
 
@@ -388,7 +394,7 @@ impl<R: AsyncRead + Unpin> RequestReader<R> {
     pub fn new(reader: R) -> Self {
         Self {
             reader,
-            buffer: [0; 1024],
+            buffer: [0; 8192],
             buffer_index: 0,
         }
     }
@@ -429,7 +435,7 @@ fn parse_request_line(data: &[u8]) -> Result<(RequestLine, usize), ParseError> {
     let request_target = parts.next().ok_or(ParseError::InvalidRequestLine)?;
     let http = parts.next().ok_or(ParseError::InvalidRequestLine)?;
 
-    // make sure there is not a 4th part
+    // makes sure there is not a 4th part
     if parts.next().is_some() {
         return Err(ParseError::InvalidRequestLine);
     }

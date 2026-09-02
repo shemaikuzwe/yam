@@ -1,7 +1,10 @@
-use std::{any::{Any, TypeId}, collections::HashMap};
+use std::{
+    any::{Any, TypeId},
+    collections::HashMap,
+};
 
 #[derive(Debug, Default)]
-pub struct Extensions{
+pub struct Extensions {
     map: HashMap<TypeId, Box<dyn Any + Send + Sync>>,
 }
 impl Extensions {
@@ -18,8 +21,8 @@ impl Extensions {
     /// extensions.insert(AuthUser { id: 2 });
     /// assert_eq!(extensions.get::<AuthUser>(), Some(&AuthUser { id: 2 }));
     /// ```
-    pub fn insert<T:Any+Send+Sync>(&mut self,val:T){
-          self.map.insert(TypeId::of::<T>(), Box::new(val));
+    pub fn insert<T: Any + Send + Sync>(&mut self, val: T) {
+        self.map.insert(TypeId::of::<T>(), Box::new(val));
     }
     /// Returns a reference to the value stored for type `T`, or `None` if
     /// nothing was stored for it.
@@ -37,7 +40,7 @@ impl Extensions {
     /// assert_eq!(extensions.get::<String>(), None);
     /// ```
     pub fn get<T: Any + Send + Sync>(&self) -> Option<&T> {
-           self.map.get(&TypeId::of::<T>())?.downcast_ref::<T>()
+        self.map.get(&TypeId::of::<T>())?.downcast_ref::<T>()
     }
     /// Returns a mutable reference to the value stored for type `T`, or
     /// `None` if nothing was stored for it.
@@ -56,7 +59,7 @@ impl Extensions {
     /// assert_eq!(extensions.get::<RateLimit>().map(|l| l.remaining), Some(4));
     /// ```
     pub fn get_mut<T: Any + Send + Sync>(&mut self) -> Option<&mut T> {
-           self.map.get_mut(&TypeId::of::<T>())?.downcast_mut::<T>()
+        self.map.get_mut(&TypeId::of::<T>())?.downcast_mut::<T>()
     }
     /// Removes and returns the value stored for type `T`, or `None` if
     /// nothing was stored for it.
@@ -72,7 +75,11 @@ impl Extensions {
     /// assert_eq!(extensions.get::<String>(), None);
     /// ```
     pub fn remove<T: Any + Send + Sync>(&mut self) -> Option<T> {
-           self.map.remove(&TypeId::of::<T>())?.downcast::<T>().ok().map(|b| *b)
+        self.map
+            .remove(&TypeId::of::<T>())?
+            .downcast::<T>()
+            .ok()
+            .map(|b| *b)
     }
 }
 
@@ -113,10 +120,7 @@ mod tests {
         extensions.insert(String::from("user"));
         extensions.insert(42u64);
 
-        assert_eq!(
-            extensions.get::<String>().map(String::as_str),
-            Some("user")
-        );
+        assert_eq!(extensions.get::<String>().map(String::as_str), Some("user"));
         assert_eq!(extensions.get::<u64>().copied(), Some(42));
     }
 
@@ -148,9 +152,6 @@ mod tests {
         extensions.insert(String::from("user"));
 
         assert_eq!(extensions.remove::<u64>(), None);
-        assert_eq!(
-            extensions.get::<String>().map(String::as_str),
-            Some("user")
-        );
+        assert_eq!(extensions.get::<String>().map(String::as_str), Some("user"));
     }
 }

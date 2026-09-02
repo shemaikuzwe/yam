@@ -13,6 +13,8 @@ use tokio_rustls::{
 use url::Url;
 use yam_shared::Headers;
 
+const SEPARATOR: &[u8] = b"\r\n\r\n";
+
 #[derive(Debug)]
 pub struct HttpClient {
     base_url: Option<String>,
@@ -419,63 +421,20 @@ let response = client
             request_head.push_str(&format!("{name}: {value}\r\n"));
         }
         request_head.push_str("\r\n");
-        let response_bytes = match url.scheme() {
-            "http" => Self::send_request(stream, request_head.as_bytes(), &body.bytes).await?,
+        match url.scheme() {
+            "http" => Self::exchange(stream, request_head.as_bytes(), &body.bytes).await,
             "https" => {
                 let server_name = ServerName::try_from(host.to_owned())
                     .map_err(|_| Error::InvalidHostname(host.into()))?;
                 let connector = TlsConnector::from(Arc::clone(&self.tls_configuration));
                 let tls_stream = connector.connect(server_name, stream).await?;
-                Self::send_request(tls_stream, request_head.as_bytes(), &body.bytes).await?
+                Self::exchange(tls_stream, request_head.as_bytes(), &body.bytes).await
             }
-            scheme => {
-                return Err(Error::UnsupportedScheme(scheme.into()));
-            }
-        };
-
-        let separator = b"\r\n\r\n";
-        let idx = response_bytes
-            .windows(separator.len())
-            .position(|window| window == separator)
-            .ok_or_else(|| Error::InvalidResponse("response is missing header separator".into()))?;
-        let response_head = &response_bytes[..idx];
-        let response_body = &response_bytes[idx + separator.len()..];
-        let response_head = std::str::from_utf8(response_head)
-            .map_err(|_| Error::InvalidResponse("response head is not valid UTF-8".into()))?;
-        let status_line = response_head
-            .split("\r\n")
-            .next()
-            .ok_or_else(|| Error::InvalidResponse("response is missing status line".into()))?;
-
-        let mut parts = status_line.split_whitespace();
-
-        let _ = parts
-            .next()
-            .ok_or_else(|| Error::InvalidResponse("response is missing HTTP version".into()))?;
-
-        let status = parts
-            .next()
-            .ok_or_else(|| Error::InvalidResponse("response is missing status code".into()))?
-            .parse::<u16>()
-            .map_err(|_| Error::InvalidResponse("response has invalid status code".into()))?;
-        let mut headers = Vec::new();
-        for line in response_head.split("\r\n").skip(1) {
-            let (name, value) = line.split_once(":").ok_or_else(|| {
-                Error::InvalidResponse(format!("invalid response header: {line}"))
-            })?;
-            headers.push((name.trim().to_ascii_lowercase(), value.trim().to_string()));
+            scheme => Err(Error::UnsupportedScheme(scheme.into())),
         }
-        Ok(Response {
-            status,
-            headers,
-            body: response_body.into(),
-        })
     }
-    async fn send_request<S>(
-        mut stream: S,
-        request_head: &[u8],
-        body: &[u8],
-    ) -> Result<Vec<u8>, Error>
+
+    async fn exchange<S>(mut stream: S, request_head: &[u8], body: &[u8]) -> Result<Response, Error>
     where
         S: AsyncRead + AsyncWrite + Unpin,
     {
@@ -483,20 +442,62 @@ let response = client
         stream.write_all(body).await?;
         stream.flush().await?;
 
-        let mut response_bytes = Vec::new();
-        stream.read_to_end(&mut response_bytes).await?;
+        let mut buffer = Vec::new();
+        let idx = loop {
+            if let Some(idx) = buffer
+                .windows(SEPARATOR.len())
+                .position(|window| window == SEPARATOR)
+            {
+                break idx;
+            }
+            if stream.read_buf(&mut buffer).await? == 0 {
+                return Err(Error::InvalidResponse(
+                    "response is missing header separator".into(),
+                ));
+            }
+        };
 
-        Ok(response_bytes)
+        let (status, headers) = parse_head(&buffer[..idx])?;
+        let mut response_body = buffer[idx + SEPARATOR.len()..].to_vec();
+
+        if has_body(status) {
+            match headers
+                .iter()
+                .find(|(name, _)| name == "content-length")
+                .map(|(_, value)| value)
+            {
+                Some(value) => {
+                    let length = value.parse::<usize>().map_err(|_| {
+                        Error::InvalidResponse("response has invalid content-length".into())
+                    })?;
+                    let read = response_body.len();
+                    if read < length {
+                        response_body.resize(length, 0);
+                        stream.read_exact(&mut response_body[read..]).await?;
+                    } else {
+                        response_body.truncate(length);
+                    }
+                }
+                None => {
+                    stream.read_to_end(&mut response_body).await?;
+                }
+            }
+        } else {
+            response_body.clear();
+        }
+
+        Ok(Response {
+            status,
+            headers,
+            body: response_body,
+        })
     }
 
     fn resolve_url(&self, value: &str) -> Result<Url, Error> {
         if let Ok(url) = Url::parse(value) {
             return Ok(url);
         }
-        let base_url = self
-            .base_url
-            .as_ref()
-            .ok_or(Error::MissingBaseUrl)?;
+        let base_url = self.base_url.as_ref().ok_or(Error::MissingBaseUrl)?;
         let url = format!(
             "{}/{}",
             base_url.trim_end_matches('/'),
@@ -504,6 +505,41 @@ let response = client
         );
         Url::parse(&url).map_err(Error::Url)
     }
+}
+
+/// Informational, no content, and not modified responses never carry a body.
+fn has_body(status: u16) -> bool {
+    !(matches!(status, 204 | 304) || (100..200).contains(&status))
+}
+
+fn parse_head(head: &[u8]) -> Result<(u16, Vec<(String, String)>), Error> {
+    let head = std::str::from_utf8(head)
+        .map_err(|_| Error::InvalidResponse("response head is not valid UTF-8".into()))?;
+    let status_line = head
+        .split("\r\n")
+        .next()
+        .ok_or_else(|| Error::InvalidResponse("response is missing status line".into()))?;
+
+    let mut parts = status_line.split_whitespace();
+
+    let _ = parts
+        .next()
+        .ok_or_else(|| Error::InvalidResponse("response is missing HTTP version".into()))?;
+
+    let status = parts
+        .next()
+        .ok_or_else(|| Error::InvalidResponse("response is missing status code".into()))?
+        .parse::<u16>()
+        .map_err(|_| Error::InvalidResponse("response has invalid status code".into()))?;
+
+    let mut headers = Vec::new();
+    for line in head.split("\r\n").skip(1) {
+        let (name, value) = line
+            .split_once(":")
+            .ok_or_else(|| Error::InvalidResponse(format!("invalid response header: {line}")))?;
+        headers.push((name.trim().to_ascii_lowercase(), value.trim().to_string()));
+    }
+    Ok((status, headers))
 }
 
 #[cfg(test)]
