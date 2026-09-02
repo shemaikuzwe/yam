@@ -31,10 +31,10 @@ pub struct RequestLine {
 }
 #[derive(Debug, PartialEq)]
 enum ParseState {
-    INIT,
-    HEADERS,
-    BODY,
-    DONE,
+    Init,
+    Headers,
+    Body,
+    Done,
 }
 #[derive(Debug, PartialEq, Error)]
 pub enum ParseError {
@@ -77,14 +77,14 @@ impl Request {
         Request {
             headers: Headers::new(),
             body: Vec::new(),
-            parse_state: ParseState::INIT,
+            parse_state: ParseState::Init,
             path_params: HashMap::new(),
             request_line: RequestLine::default(),
             extensions: Extensions::default(),
         }
     }
     fn done(&self) -> bool {
-        self.parse_state == ParseState::DONE
+        self.parse_state == ParseState::Done
     }
     fn has_body(&self) -> bool {
         let content_length = self.headers.get("content-length");
@@ -105,7 +105,7 @@ impl Request {
                 return Ok(read);
             }
             match self.parse_state {
-                ParseState::INIT => {
+                ParseState::Init => {
                     let result = match parse_request_line(curr_data) {
                         Ok(result) => result,
                         Err(ParseError::IncompleteRequestLine) => return Ok(read),
@@ -116,9 +116,9 @@ impl Request {
                     }
                     self.request_line = result.0;
                     read += result.1;
-                    self.parse_state = ParseState::HEADERS
+                    self.parse_state = ParseState::Headers
                 }
-                ParseState::HEADERS => {
+                ParseState::Headers => {
                     let result = self.headers.parse(curr_data).map_err(ParseError::from)?;
                     if result.0 == 0 {
                         return Ok(read);
@@ -126,13 +126,13 @@ impl Request {
                     read += result.0;
                     if result.1 {
                         if self.has_body() {
-                            self.parse_state = ParseState::BODY
+                            self.parse_state = ParseState::Body
                         } else {
-                            self.parse_state = ParseState::DONE
+                            self.parse_state = ParseState::Done
                         }
                     }
                 }
-                ParseState::BODY => {
+                ParseState::Body => {
                     const MAX_BODY_SIZE: usize = 2 * 1024 * 1024;
                     let length = self
                         .headers
@@ -141,7 +141,7 @@ impl Request {
                         .parse::<usize>()
                         .map_err(|_| ParseError::InvalidContentLengthHeader)?;
                     if length == 0 {
-                        self.parse_state = ParseState::DONE;
+                        self.parse_state = ParseState::Done;
                         return Ok(read);
                     }
                     if length > MAX_BODY_SIZE {
@@ -151,14 +151,14 @@ impl Request {
                     self.body.extend_from_slice(&curr_data[..remaining]);
                     read += remaining;
                     if self.body.len() == length {
-                        self.parse_state = ParseState::DONE;
+                        self.parse_state = ParseState::Done;
                         return Ok(read);
                     }
                     if remaining == 0 && self.body.len() != length {
                         return Err(ParseError::InvalidContentLengthHeader);
                     }
                 }
-                ParseState::DONE => {
+                ParseState::Done => {
                     return Ok(read);
                 }
             }
@@ -244,15 +244,15 @@ impl Request {
     }
 
     pub fn method(&self) -> &str {
-        &self.request_line.method.as_str()
+        self.request_line.method.as_str()
     }
 
     pub fn path(&self) -> &str {
-        &self.request_line.request_target.as_str()
+        self.request_line.request_target.as_str()
     }
 
     pub fn http_version(&self) -> &str {
-        &self.request_line.http_version.as_str()
+        self.request_line.http_version.as_str()
     }
 
     /// Returns a path parameter captured by a router pattern.
@@ -540,7 +540,7 @@ mod tests {
             request_line: RequestLine::default(),
             headers: Headers::new(),
             body: br#"{"email":"user@example.com","password":"1234"}"#.to_vec(),
-            parse_state: ParseState::DONE,
+            parse_state: ParseState::Done,
             extensions: Extensions::default(),
         };
         let login: Login = request.json().expect("Should be desirialized");
