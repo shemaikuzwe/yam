@@ -7,11 +7,11 @@ use yam_server::{
     response::IntoResponse,
 };
 
-use crate::middleware::{Middleware, Next};
+use crate::middleware::{Middleware, Next, Scope};
 
 pub struct Router {
     routes: HashMap<Method, MatchRouter<Arc<dyn Handler>>>,
-    middlewares: Vec<Arc<dyn Middleware>>,
+    middlewares: Vec<(Arc<dyn Middleware>, Scope)>,
     trailing_slash: bool,
     route_prefix: String,
 }
@@ -167,7 +167,8 @@ impl Router {
     where
         M: Middleware,
     {
-        self.middlewares.push(Arc::new(middleware));
+        let scope = middleware.scope();
+        self.middlewares.push((Arc::new(middleware), scope));
         self
     }
     fn add_route<H: Handler>(&mut self, method: Method, path: &str, handler: H) {
@@ -209,21 +210,11 @@ impl Router {
 impl Handler for Router {
     fn call(&self, mut req: Request) -> HandlerFuture {
         let path = self.normalize_path(req.path());
-        let method = match Method::try_from(req.method()) {
-            Ok(method) => method,
-            Err(_) => {
-                return Box::pin(async move {
-                    Ok(Response::new()
-                        .status(StatusCode::StatusMethodNotAllowed)
-                        .send("Method Not Allowed"))
-                });
-            }
-        };
-        let matched_route = self
-            .routes
-            .get(&method)
+        let matched_route = Method::try_from(req.method())
+            .ok()
+            .and_then(|method| self.routes.get(&method))
             .and_then(|router| router.at(path).ok());
-        let (handler, params) = match matched_route {
+        let (handler, params, matched) = match matched_route {
             Some(matched) => {
                 let handler = Arc::clone(matched.value);
                 let params = matched
@@ -231,7 +222,7 @@ impl Handler for Router {
                     .iter()
                     .map(|(name, value)| (name.to_string(), value.to_string()))
                     .collect::<HashMap<_, _>>();
-                (handler, params)
+                (handler, params, true)
             }
             None => {
                 let path_exists = self.routes.values().any(|route| route.at(path).is_ok());
@@ -239,11 +230,14 @@ impl Handler for Router {
                     true => (StatusCode::StatusMethodNotAllowed, "Method not allowed"),
                     false => (StatusCode::StatusNotFound, "Not Found"),
                 };
-                return Box::pin(async move { Ok(Response::new().status(status).send(message)) });
+                let handler: Arc<dyn Handler> = Arc::new(move |_req: Request| async move {
+                    Response::new().status(status).send(message)
+                });
+                (handler, HashMap::new(), false)
             }
         };
         req.set_params(params);
-        Next::new(self.middlewares.clone(), handler).run(req)
+        Next::new(self.middlewares.clone(), handler, matched).run(req)
     }
 }
 
@@ -424,6 +418,80 @@ mod tests {
                 "first:after"
             ]
         );
+    }
+
+    #[tokio::test]
+    async fn should_not_run_default_middlewares_for_unmateched_routes() {
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let mut router = Router::new(RouterConfig::default());
+
+        let seen_by_middleware = Arc::clone(&seen);
+        router.middleware(move |request: Request, next: Next| {
+            let seen = Arc::clone(&seen_by_middleware);
+            async move {
+                let response = next.run(request).await;
+                if let Ok(response) = &response {
+                    seen.lock().unwrap().push(response.status);
+                }
+                response
+            }
+        });
+        router.get("/users", |_| async { "users" });
+
+        for (method, expected) in [
+            ("GET", StatusCode::StatusNotFound),
+            ("POST", StatusCode::StatusMethodNotAllowed),
+        ] {
+            let path = if method == "POST" {
+                "/users"
+            } else {
+                "/missing"
+            };
+            let response = router
+                .call(request(method, path))
+                .await
+                .expect("router should return a response");
+
+            assert_eq!(response.status, expected);
+        }
+        assert!((*seen.lock().unwrap()).is_empty());
+    }
+
+    #[tokio::test]
+    async fn should_run_global_middleware() {
+        struct Observer {
+            seen: Arc<Mutex<Vec<StatusCode>>>,
+        }
+        impl Middleware for Observer {
+            fn call(&self, req: Request, next: Next) -> HandlerFuture {
+                let seen = Arc::clone(&self.seen);
+                Box::pin(async move {
+                    let response = next.run(req).await;
+                    if let Ok(response) = &response {
+                        seen.lock().unwrap().push(response.status);
+                    }
+                    response
+                })
+            }
+            fn scope(&self) -> Scope {
+                Scope::Global
+            }
+        }
+
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let mut router = Router::new(RouterConfig::default());
+        router.middleware(Observer {
+            seen: Arc::clone(&seen),
+        });
+        router.get("/users", |_| async { "users" });
+
+        let response = router
+            .call(request("GET", "/missing"))
+            .await
+            .expect("router should return a response");
+
+        assert_eq!(response.status, StatusCode::StatusNotFound);
+        assert_eq!(*seen.lock().unwrap(), [StatusCode::StatusNotFound]);
     }
 
     #[tokio::test]

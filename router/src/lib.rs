@@ -20,7 +20,9 @@
 //! # }
 //! ```
 
+pub mod logger;
 pub mod middleware;
 pub mod router;
 
+pub use logger::Logger;
 pub use middleware::{Middleware, Next};
