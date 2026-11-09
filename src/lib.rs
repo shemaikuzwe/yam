@@ -17,7 +17,7 @@ pub use yam_router as router;
 
 /// ```no_run
 /// use serde::Deserialize;
-/// use yam_http::client::client::{Error, HttpClient, HttpClientConfig, RequestOptions};
+/// use yam_http::client::{Error, HttpClient, HttpClientConfig, RequestOptions};
 ///
 /// #[derive(Deserialize)]
 /// struct User { id: u64 }

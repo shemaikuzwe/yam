@@ -1,16 +1,69 @@
-use super::error::ParseError;
+use std::{fmt::Display, io};
+
+use thiserror::Error;
 
 const SEPARATOR: &[u8] = b"\r\n";
 
-pub fn parse_chunk_size(data: &[u8]) -> Result<(usize, usize), ParseError> {
+pub trait IntoChunk {
+    fn into_chunk(self) -> io::Result<Vec<u8>>;
+}
+
+impl IntoChunk for Vec<u8> {
+    fn into_chunk(self) -> io::Result<Vec<u8>> {
+        Ok(self)
+    }
+}
+
+impl IntoChunk for String {
+    fn into_chunk(self) -> io::Result<Vec<u8>> {
+        Ok(self.into_bytes())
+    }
+}
+
+impl IntoChunk for &str {
+    fn into_chunk(self) -> io::Result<Vec<u8>> {
+        Ok(self.as_bytes().to_vec())
+    }
+}
+
+impl IntoChunk for &[u8] {
+    fn into_chunk(self) -> io::Result<Vec<u8>> {
+        Ok(self.to_vec())
+    }
+}
+
+impl<T, E> IntoChunk for Result<T, E>
+where
+    T: IntoChunk,
+    E: Display,
+{
+    fn into_chunk(self) -> io::Result<Vec<u8>> {
+        self.map_err(|e| io::Error::other(e.to_string()))?
+            .into_chunk()
+    }
+}
+
+#[derive(Debug, PartialEq, Eq, Clone, Copy, Error)]
+pub enum ChunkError {
+    #[error("incomplete chunk size")]
+    IncompleteChunkSize,
+    #[error("invalid chunk size")]
+    InvalidChunkSize,
+    #[error("invalid chunked encoding")]
+    InvalidChunkedEncoding,
+    #[error("chunk or body too large")]
+    TooLarge,
+}
+
+pub fn parse_chunk_size(data: &[u8]) -> Result<(usize, usize), ChunkError> {
     let line_end = data
         .windows(SEPARATOR.len())
         .position(|window| window == SEPARATOR)
-        .ok_or(ParseError::IncompleteChunkSize)?;
+        .ok_or(ChunkError::IncompleteChunkSize)?;
 
     let line = &data[..line_end];
     if line.is_empty() {
-        return Err(ParseError::InvalidChunkSize);
+        return Err(ChunkError::InvalidChunkSize);
     }
 
     let size_end = line
@@ -19,18 +72,18 @@ pub fn parse_chunk_size(data: &[u8]) -> Result<(usize, usize), ParseError> {
         .unwrap_or(line.len());
 
     let size_str = std::str::from_utf8(&line[..size_end])
-        .map_err(|_| ParseError::InvalidChunkSize)?
+        .map_err(|_| ChunkError::InvalidChunkSize)?
         .trim();
 
     let size = usize::from_str_radix(size_str, 16)
-        .map_err(|_| ParseError::InvalidChunkSize)?;
+        .map_err(|_| ChunkError::InvalidChunkSize)?;
 
     let bytes_consumed = line_end + SEPARATOR.len();
     Ok((size, bytes_consumed))
 }
 
 /// Parses trailers headers.
-pub fn parse_trailing_headers(data: &[u8]) -> Result<(usize, bool), ParseError> {
+pub fn parse_trailing_headers(data: &[u8]) -> Result<(usize, bool), ChunkError> {
     // Look for empty line (CRLF CRLF) which marks end of trailing headers
     if data.len() < 2 {
         return Ok((0, false));
@@ -55,13 +108,13 @@ pub fn parse_chunked_body(
     data: &[u8],
     body: &mut Vec<u8>,
     max_body_size: usize,
-) -> Result<(usize, bool), ParseError> {
+) -> Result<(usize, bool), ChunkError> {
     let mut consumed = 0;
     while consumed < data.len() {
         let chunk_data = &data[consumed..];
         let (chunk_size, size_bytes) = match parse_chunk_size(chunk_data) {
             Ok(result) => result,
-            Err(ParseError::IncompleteChunkSize) => break,
+            Err(ChunkError::IncompleteChunkSize) => break,
             Err(err) => return Err(err),
         };
 
@@ -80,11 +133,11 @@ pub fn parse_chunked_body(
         }
 
         if &chunk_data[size_bytes + chunk_size..total_len] != b"\r\n" {
-            return Err(ParseError::InvalidChunkedEncoding);
+            return Err(ChunkError::InvalidChunkedEncoding);
         }
 
         if body.len() + chunk_size > max_body_size {
-            return Err(ParseError::RequestTooLarge);
+            return Err(ChunkError::TooLarge);
         }
 
         body.extend_from_slice(&chunk_data[size_bytes..size_bytes + chunk_size]);
@@ -92,6 +145,19 @@ pub fn parse_chunked_body(
     }
 
     Ok((consumed, false))
+}
+
+/// Encodes a chunk formatted with hex size and CRLF. If empty, encodes terminal chunk `0\r\n\r\n`.
+pub fn encode_chunk(chunk: &[u8]) -> Vec<u8> {
+    if chunk.is_empty() {
+        return b"0\r\n\r\n".to_vec();
+    }
+    let mut encoded = Vec::with_capacity(chunk.len() + 16);
+    use std::io::Write;
+    let _ = write!(&mut encoded, "{:x}\r\n", chunk.len());
+    encoded.extend_from_slice(chunk);
+    encoded.extend_from_slice(b"\r\n");
+    encoded
 }
 
 #[cfg(test)]
@@ -119,7 +185,7 @@ mod tests {
         let data = b"1a";
         assert!(matches!(
             parse_chunk_size(data),
-            Err(ParseError::IncompleteChunkSize)
+            Err(ChunkError::IncompleteChunkSize)
         ));
     }
 
@@ -163,5 +229,26 @@ mod tests {
         assert_eq!(consumed, data.len());
         assert!(done);
         assert_eq!(&body, b"hello");
+    }
+
+    #[test]
+    fn should_encode_chunk() {
+        assert_eq!(encode_chunk(b"hello"), b"5\r\nhello\r\n");
+        assert_eq!(encode_chunk(b""), b"0\r\n\r\n");
+    }
+
+    #[test]
+    fn should_convert_chunks() {
+        assert_eq!(b"hello".to_vec().into_chunk().unwrap(), b"hello");
+        assert_eq!("hello".into_chunk().unwrap(), b"hello");
+        assert_eq!(
+            Ok::<_, ChunkError>(b"hello".to_vec()).into_chunk().unwrap(),
+            b"hello"
+        );
+        assert!(
+            Err::<Vec<u8>, _>(ChunkError::TooLarge)
+                .into_chunk()
+                .is_err()
+        );
     }
 }

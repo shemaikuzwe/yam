@@ -1,7 +1,7 @@
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
-use yam_http::client::client::{Body, HttpClient, HttpClientConfig, RequestOptions};
+use yam_http::client::{Body, HttpClient, HttpClientConfig, RequestOptions};
 
 #[allow(non_snake_case)]
 #[derive(Debug, Deserialize, Serialize)]

@@ -1086,6 +1086,7 @@ dependencies = [
 name = "yam-client"
 version = "0.1.0"
 dependencies = [
+ "futures",
  "rcgen",
  "serde",
  "serde_json",

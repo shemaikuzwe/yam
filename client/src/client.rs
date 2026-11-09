@@ -1,19 +1,15 @@
-use std::{format, io, str::Utf8Error, sync::Arc, time::Duration};
+use std::{format, sync::Arc, time::Duration};
 
-use serde::{Serialize, de::DeserializeOwned};
-use thiserror::Error;
-use tokio::{
-    io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt},
-    net::TcpStream,
-};
-use tokio_rustls::{
-    TlsConnector,
-    rustls::{ClientConfig, RootCertStore, pki_types::ServerName},
-};
+use tokio_rustls::rustls::{ClientConfig, RootCertStore};
 use url::Url;
 use yam_shared::Headers;
 
-const SEPARATOR: &[u8] = b"\r\n\r\n";
+use crate::{
+    error::Error,
+    request::{Body, Method, RequestOptions},
+    response::Response,
+    transport,
+};
 
 #[derive(Debug)]
 pub struct HttpClient {
@@ -22,200 +18,11 @@ pub struct HttpClient {
     tls_configuration: Arc<ClientConfig>,
     headers: Headers,
 }
+
 impl Default for HttpClient {
     fn default() -> Self {
         Self::new(HttpClientConfig::default())
     }
-}
-
-#[derive(Debug)]
-pub struct Response {
-    pub status: u16,
-    pub headers: Vec<(String, String)>,
-    pub body: Vec<u8>,
-}
-
-impl Response {
-    /// Deserializes the response body as JSON.
-    ///
-    /// ```
-    /// use serde::Deserialize;
-    /// use yam_client::client::Response;
-    /// #[derive(Deserialize)]
-    /// struct User { id: u64 }
-    ///
-    /// let response = Response {
-    ///     status: 200,
-    ///     headers: vec![],
-    ///     body: br#"{"id":42}"#.to_vec(),
-    /// };
-    /// let user: User = response.json()?;
-    /// assert_eq!(user.id, 42);
-    /// # Ok::<(), serde_json::Error>(())
-    /// ```
-    pub fn json<T>(&self) -> Result<T, serde_json::Error>
-    where
-        T: DeserializeOwned,
-    {
-        serde_json::from_slice(&self.body)
-    }
-    /// Reads the response body as UTF-8 text.
-    pub fn text(&self) -> Result<&str, std::str::Utf8Error> {
-        std::str::from_utf8(&self.body)
-    }
-    /// Returns `true` for status codes from 200 through 299.
-    ///
-    /// ```
-    /// use yam_client::client::Response;
-    /// let response = Response { status: 204, headers: vec![], body: vec![] };
-    /// assert!(response.ok());
-    /// ```
-    pub fn ok(&self) -> bool {
-        (200..=299).contains(&self.status)
-    }
-    /// Returns the raw response body.
-    pub fn bytes(&self) -> &[u8] {
-        &self.body
-    }
-    /// Returns the first matching header value.
-    ///
-    /// ```
-    /// use yam_client::client::Response;
-    /// let response = Response {
-    ///     status: 200,
-    ///     headers: vec![("content-type".into(), "application/json".into())],
-    ///     body: vec![],
-    /// };
-    /// assert_eq!(response.header("Content-Type"), Some("application/json"));
-    /// ```
-    pub fn header(&self, name: &str) -> Option<&str> {
-        self.headers
-            .iter()
-            .find(|(key, _)| key.eq_ignore_ascii_case(name))
-            .map(|(_, v)| v.as_str())
-    }
-}
-
-#[derive(Debug, Clone, Copy, Hash, Eq, PartialEq)]
-pub enum Method {
-    GET,
-    POST,
-    PATCH,
-    PUT,
-    DELETE,
-}
-impl Method {
-    fn as_str(self) -> &'static str {
-        match self {
-            Self::GET => "GET",
-            Self::POST => "POST",
-            Self::PATCH => "PATCH",
-            Self::PUT => "PUT",
-            Self::DELETE => "DELETE",
-        }
-    }
-}
-
-#[derive(Debug, Error)]
-pub enum Error {
-    #[error("I/O error: {0}")]
-    Io(#[from] io::Error),
-    #[error("invalid URL: {0}")]
-    Url(#[from] url::ParseError),
-    #[error("relative URL requires a base URL")]
-    MissingBaseUrl,
-
-    #[error("unsupported URL scheme: {0}")]
-    UnsupportedScheme(String),
-    #[error("invalid hostname: {0}")]
-    InvalidHostname(String),
-    #[error("missing port: {0}")]
-    MissingPort(String),
-    #[error("invalid HTTP reponse: {0}")]
-    InvalidResponse(String),
-    #[error("invalid JSON body: {0}")]
-    Json(#[from] serde_json::Error),
-    #[error("invalid form body: {0}")]
-    Form(#[from] serde_urlencoded::ser::Error),
-
-    #[error("response body is not valid UTF-8: {0}")]
-    Utf8(#[from] Utf8Error),
-    #[error("request timed out")]
-    Timeout,
-}
-
-#[derive(Debug)]
-pub struct Body {
-    bytes: Vec<u8>,
-    content_type: Option<String>,
-}
-
-impl Body {
-    /// Serializes a value as an `application/json` body.
-    ///
-    /// ```
-    /// use serde_json::json;
-    /// use yam_client::client::Body;
-    /// let body = Body::json(&json!({ "name": "Yam" }))?;
-    /// # let _ = body;
-    /// # Ok::<(), serde_json::Error>(())
-    /// ```
-    pub fn json<T: Serialize>(value: &T) -> Result<Self, serde_json::Error> {
-        Ok(Self {
-            bytes: serde_json::to_vec(value)?,
-            content_type: Some("application/json".into()),
-        })
-    }
-
-    /// Serializes a value as an `application/x-www-form-urlencoded` body.
-    ///
-    /// ```
-    /// use serde::Serialize;
-    /// use yam_client::client::Body;
-    /// #[derive(Serialize)]
-    /// struct Login<'a> { email: &'a str }
-    /// let body = Body::form(&Login { email: "user@example.com" })?;
-    /// # let _ = body;
-    /// # Ok::<(), serde_urlencoded::ser::Error>(())
-    /// ```
-    pub fn form<T: Serialize>(value: &T) -> Result<Self, serde_urlencoded::ser::Error> {
-        Ok(Self {
-            bytes: serde_urlencoded::to_string(value)?.into_bytes(),
-            content_type: Some("application/x-www-form-urlencoded".into()),
-        })
-    }
-
-    /// Creates a UTF-8 plain-text body.
-    ///
-    /// ```
-    /// use yam_client::client::Body;
-    /// let body = Body::text("Hello world");
-    /// ```
-    pub fn text(value: impl Into<String>) -> Self {
-        Self {
-            bytes: value.into().into_bytes(),
-            content_type: Some("text/plain; charset=utf-8".into()),
-        }
-    }
-
-    /// Creates a raw byte body without inferring a content type.
-    ///
-    /// ```
-    /// use yam_client::client::Body;
-    /// let body = Body::bytes([0, 1, 2]);
-    /// ```
-    pub fn bytes(value: impl Into<Vec<u8>>) -> Self {
-        Self {
-            bytes: value.into(),
-            content_type: None,
-        }
-    }
-}
-
-#[derive(Debug, Default)]
-pub struct RequestOptions {
-    pub headers: Vec<(String, String)>,
-    pub body: Option<Body>,
 }
 
 macro_rules! route_verb {
@@ -242,12 +49,13 @@ pub struct HttpClientConfig {
     /// Headers included with every request can be overridden per request.
     pub headers: Vec<(String, String)>,
 }
+
 impl HttpClient {
     /// Creates a client from reusable URL, timeout, TLS, and header defaults.
     ///
     /// ```
     /// use std::time::Duration;
-    /// use yam_client::client::{HttpClient, HttpClientConfig};
+    /// use yam_client::{HttpClient, HttpClientConfig};
     /// let client = HttpClient::new(HttpClientConfig {
     ///     base_url: Some("https://example.com/api".into()),
     ///     timeout: Some(Duration::from_secs(10)),
@@ -277,7 +85,7 @@ impl HttpClient {
         #[doc = r#"Sends a GET request.
 
 ```no_run
-use yam_client::client::{Error, HttpClient, RequestOptions};
+use yam_client::{Error, HttpClient, RequestOptions};
 
 # async fn run() -> Result<(), Error> {
 let client = HttpClient::default();
@@ -295,7 +103,7 @@ let response = client
 
 ```no_run
 use serde_json::json;
-use yam_client::client::{Body, Error, HttpClient, RequestOptions};
+use yam_client::{Body, Error, HttpClient, RequestOptions};
 
 # async fn run() -> Result<(), Error> {
 let client = HttpClient::default();
@@ -315,7 +123,7 @@ let response = client.post("https://example.com/users", options).await?;
 
 ```no_run
 use serde_json::json;
-use yam_client::client::{Body, Error, HttpClient, RequestOptions};
+use yam_client::{Body, Error, HttpClient, RequestOptions};
 
 # async fn run() -> Result<(), Error> {
 let client = HttpClient::default();
@@ -335,7 +143,7 @@ let response = client.put("https://example.com/users/42", options).await?;
 
 ```no_run
 use serde_json::json;
-use yam_client::client::{Body, Error, HttpClient, RequestOptions};
+use yam_client::{Body, Error, HttpClient, RequestOptions};
 
 # async fn run() -> Result<(), Error> {
 let client = HttpClient::default();
@@ -354,7 +162,7 @@ let response = client.patch("https://example.com/users/42", options).await?;
         #[doc = r#"Sends a DELETE request.
 
 ```no_run
-use yam_client::client::{Error, HttpClient, RequestOptions};
+use yam_client::{Error, HttpClient, RequestOptions};
 
 # async fn run() -> Result<(), Error> {
 let client = HttpClient::default();
@@ -397,7 +205,6 @@ let response = client
             .port_or_known_default()
             .ok_or_else(|| Error::MissingPort(url.to_string()))?;
 
-        let stream = TcpStream::connect((host, port)).await?;
         let mut request_target = url.path().to_string();
         if let Some(query) = url.query() {
             request_target.push('?');
@@ -405,92 +212,41 @@ let response = client
         }
 
         let mut headers = self.headers.clone();
-        let body = options.body.unwrap_or_else(|| Body::bytes(Vec::new()));
-        if let Some(content_type) = body.content_type {
+        let (body, chunks, content_type) = options
+            .body
+            .unwrap_or_else(|| Body::bytes(Vec::new()))
+            .into_parts();
+        if let Some(content_type) = content_type {
             headers.set("content-type", content_type);
         }
         for (name, value) in options.headers {
             headers.set(&name, value);
         }
         headers.set("host", format!("{host}:{port}"));
-        headers.set("connection", "close".into());
-        headers.set("content-length", body.bytes.len().to_string());
+        headers.set("connection", "keep-alive".into());
+        if chunks.is_some() {
+            headers.set("transfer-encoding", "chunked".into());
+        } else {
+            headers.set("content-length", body.len().to_string());
+        }
 
         let mut request_head = format!("{} {} HTTP/1.1\r\n", method.as_str(), request_target);
         for (name, value) in headers.iter() {
+            if chunks.is_some() && name.eq_ignore_ascii_case("content-length") {
+                continue;
+            }
             request_head.push_str(&format!("{name}: {value}\r\n"));
         }
         request_head.push_str("\r\n");
-        match url.scheme() {
-            "http" => Self::exchange(stream, request_head.as_bytes(), &body.bytes).await,
-            "https" => {
-                let server_name = ServerName::try_from(host.to_owned())
-                    .map_err(|_| Error::InvalidHostname(host.into()))?;
-                let connector = TlsConnector::from(Arc::clone(&self.tls_configuration));
-                let tls_stream = connector.connect(server_name, stream).await?;
-                Self::exchange(tls_stream, request_head.as_bytes(), &body.bytes).await
-            }
-            scheme => Err(Error::UnsupportedScheme(scheme.into())),
-        }
-    }
 
-    async fn exchange<S>(mut stream: S, request_head: &[u8], body: &[u8]) -> Result<Response, Error>
-    where
-        S: AsyncRead + AsyncWrite + Unpin,
-    {
-        stream.write_all(request_head).await?;
-        stream.write_all(body).await?;
-        stream.flush().await?;
-
-        let mut buffer = Vec::new();
-        let idx = loop {
-            if let Some(idx) = buffer
-                .windows(SEPARATOR.len())
-                .position(|window| window == SEPARATOR)
-            {
-                break idx;
-            }
-            if stream.read_buf(&mut buffer).await? == 0 {
-                return Err(Error::InvalidResponse(
-                    "response is missing header separator".into(),
-                ));
-            }
-        };
-
-        let (status, headers) = parse_head(&buffer[..idx])?;
-        let mut response_body = buffer[idx + SEPARATOR.len()..].to_vec();
-
-        if has_body(status) {
-            match headers
-                .iter()
-                .find(|(name, _)| name == "content-length")
-                .map(|(_, value)| value)
-            {
-                Some(value) => {
-                    let length = value.parse::<usize>().map_err(|_| {
-                        Error::InvalidResponse("response has invalid content-length".into())
-                    })?;
-                    let read = response_body.len();
-                    if read < length {
-                        response_body.resize(length, 0);
-                        stream.read_exact(&mut response_body[read..]).await?;
-                    } else {
-                        response_body.truncate(length);
-                    }
-                }
-                None => {
-                    stream.read_to_end(&mut response_body).await?;
-                }
-            }
-        } else {
-            response_body.clear();
-        }
-
-        Ok(Response {
-            status,
-            headers,
-            body: response_body,
-        })
+        transport::send(
+            &url,
+            &self.tls_configuration,
+            request_head.as_bytes(),
+            body,
+            chunks,
+        )
+        .await
     }
 
     fn resolve_url(&self, value: &str) -> Result<Url, Error> {
@@ -505,41 +261,6 @@ let response = client
         );
         Url::parse(&url).map_err(Error::Url)
     }
-}
-
-/// Informational, no content, and not modified responses never carry a body.
-fn has_body(status: u16) -> bool {
-    !(matches!(status, 204 | 304) || (100..200).contains(&status))
-}
-
-fn parse_head(head: &[u8]) -> Result<(u16, Vec<(String, String)>), Error> {
-    let head = std::str::from_utf8(head)
-        .map_err(|_| Error::InvalidResponse("response head is not valid UTF-8".into()))?;
-    let status_line = head
-        .split("\r\n")
-        .next()
-        .ok_or_else(|| Error::InvalidResponse("response is missing status line".into()))?;
-
-    let mut parts = status_line.split_whitespace();
-
-    let _ = parts
-        .next()
-        .ok_or_else(|| Error::InvalidResponse("response is missing HTTP version".into()))?;
-
-    let status = parts
-        .next()
-        .ok_or_else(|| Error::InvalidResponse("response is missing status code".into()))?
-        .parse::<u16>()
-        .map_err(|_| Error::InvalidResponse("response has invalid status code".into()))?;
-
-    let mut headers = Vec::new();
-    for line in head.split("\r\n").skip(1) {
-        let (name, value) = line
-            .split_once(":")
-            .ok_or_else(|| Error::InvalidResponse(format!("invalid response header: {line}")))?;
-        headers.push((name.trim().to_ascii_lowercase(), value.trim().to_string()));
-    }
-    Ok((status, headers))
 }
 
 #[cfg(test)]

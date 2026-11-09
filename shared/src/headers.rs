@@ -64,6 +64,12 @@ impl Headers {
             .map(String::as_str)
     }
 
+    /// Returns `true` if `Transfer-Encoding` contains `chunked`.
+    pub fn is_chunked(&self) -> bool {
+        self.get_all("transfer-encoding")
+            .any(|value| value.split(',').any(|token| token.trim().eq_ignore_ascii_case("chunked")))
+    }
+
     /// Iterates over every header name and value pair.
     ///
     /// Names with multiple values are yielded once for each value.

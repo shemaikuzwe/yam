@@ -1,4 +1,3 @@
-mod chunked;
 mod deserialization;
 mod error;
 mod method;

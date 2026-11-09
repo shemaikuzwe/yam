@@ -1,8 +1,10 @@
 use std::{cmp::min, collections::HashMap};
 
+use yam_shared::chunked::parse_chunked_body;
+
 use crate::headers::Headers;
 
-use super::chunked::parse_chunked_body;
+
 use super::error::ParseError;
 use super::request_ext::Extensions;
 use super::request_line::{parse_request_line, RequestLine};
@@ -49,7 +51,7 @@ impl Request {
 
     fn has_body(&self) -> bool {
         // Check for Transfer-Encoding: chunked
-        if self.is_chunked() {
+        if self.headers.is_chunked() {
             return true;
         }
 
@@ -63,12 +65,6 @@ impl Request {
             return false;
         }
         true
-    }
-
-    fn is_chunked(&self) -> bool {
-        self.headers
-            .get_all("transfer-encoding")
-            .any(|value| value.split(',').any(|token| token.trim().eq_ignore_ascii_case("chunked")))
     }
 
     pub fn parse(&mut self, data: &[u8]) -> Result<usize, ParseError> {
@@ -108,7 +104,7 @@ impl Request {
                 }
                 ParseState::Body => {
                     const MAX_BODY_SIZE: usize = 2 * 1024 * 1024;
-                    if self.is_chunked() {
+                    if self.headers.is_chunked() {
                         let (consumed, done) = parse_chunked_body(curr_data, &mut self.body, MAX_BODY_SIZE)?;
                         read += consumed;
                         if done {

@@ -2,7 +2,7 @@
 //!
 //! ```no_run
 //! use serde::Deserialize;
-//! use yam_client::client::{Error, HttpClient, HttpClientConfig, RequestOptions};
+//! use yam_client::{Error, HttpClient, HttpClientConfig, RequestOptions};
 //!
 //! #[derive(Deserialize)]
 //! struct User { id: u64 }
@@ -19,4 +19,13 @@
 //! # }
 //! ```
 
-pub mod client;
+mod client;
+mod error;
+mod request;
+mod response;
+mod transport;
+
+pub use client::{HttpClient, HttpClientConfig};
+pub use error::Error;
+pub use request::{Body, Method, RequestOptions};
+pub use response::Response;

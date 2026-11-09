@@ -75,7 +75,7 @@ Heavily inspired by [axios](https://axios-http.com/)
 ```rust
 use serde::Deserialize;
 use serde_json::json;
-use yam_client::client::{Body, Error, HttpClient, HttpClientConfig, RequestOptions};
+use yam_client::{Body, Error, HttpClient, HttpClientConfig, RequestOptions};
 
 #[derive(Debug, Deserialize)]
 struct User {

@@ -7,6 +7,7 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
+futures = "0.3.34"
 tokio = { version = "1.52.3", features = ["net", "io-util", "macros", "rt-multi-thread", "time"] }
 url ="2"
 serde ={ version= "1.0.228", features = ["derive"] }

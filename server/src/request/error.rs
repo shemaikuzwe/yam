@@ -38,6 +38,17 @@ impl From<HeaderParseError> for ParseError {
     }
 }
 
+impl From<yam_shared::ChunkError> for ParseError {
+    fn from(error: yam_shared::ChunkError) -> Self {
+        match error {
+            yam_shared::ChunkError::IncompleteChunkSize => Self::IncompleteChunkSize,
+            yam_shared::ChunkError::InvalidChunkSize => Self::InvalidChunkSize,
+            yam_shared::ChunkError::InvalidChunkedEncoding => Self::InvalidChunkedEncoding,
+            yam_shared::ChunkError::TooLarge => Self::RequestTooLarge,
+        }
+    }
+}
+
 #[derive(Debug, Error)]
 pub enum Error {
     #[error("io error: {0}")]

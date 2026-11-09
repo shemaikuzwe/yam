@@ -1,5 +1,6 @@
 use std::{sync::Arc, time::Duration};
 
+use futures::stream;
 use rcgen::{CertifiedKey, generate_simple_self_signed};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
@@ -12,7 +13,7 @@ use tokio_rustls::{
         pki_types::{CertificateDer, PrivatePkcs8KeyDer},
     },
 };
-use yam_client::client::{Body, Error, HttpClient, HttpClientConfig, RequestOptions};
+use yam_client::{Body, Error, HttpClient, HttpClientConfig, RequestOptions};
 
 fn tls_configuration() -> (TlsAcceptor, CertificateDer<'static>) {
     let CertifiedKey { cert, signing_key } = generate_simple_self_signed(vec!["127.0.0.1".into()])
@@ -191,4 +192,94 @@ async fn should_merge_request_headers_in_precedence_order() {
     assert!(request.contains(&format!("host: {address}\r\n")));
     assert!(request.contains("content-length: 14\r\n"));
     assert!(request.ends_with("\r\n\r\n{\"name\":\"Yam\"}"));
+}
+
+#[tokio::test]
+async fn should_send_streamed_request_as_chunked() {
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("listener should bind");
+    let address = listener.local_addr().expect("listener should have address");
+    let server = tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.expect("server should accept");
+        let mut request = Vec::new();
+        let mut buffer = [0; 1024];
+        while !request.ends_with(b"\r\n0\r\n\r\n") {
+            let read = stream
+                .read(&mut buffer)
+                .await
+                .expect("server should read request");
+            if read == 0 {
+                break;
+            }
+            request.extend_from_slice(&buffer[..read]);
+        }
+        stream
+            .write_all(b"HTTP/1.1 200 OK\r\nConnection: close\r\nContent-Length: 2\r\n\r\nok")
+            .await
+            .expect("server should write response");
+        String::from_utf8(request).expect("request should be UTF-8")
+    });
+    let client = HttpClient::new(HttpClientConfig {
+        base_url: Some(format!("http://{address}")),
+        ..Default::default()
+    });
+    let options = RequestOptions {
+        headers: vec![("content-type".into(), "text/plain".into())],
+        body: Some(Body::stream(stream::iter([
+            b"hello".to_vec(),
+            b" world".to_vec(),
+        ]))),
+    };
+
+    let response = client
+        .post("/upload", options)
+        .await
+        .expect("request should succeed");
+    let request = server.await.expect("server task should finish");
+
+    assert_eq!(response.text().expect("response should be UTF-8"), "ok");
+    assert!(request.contains("transfer-encoding: chunked\r\n"));
+    assert!(!request.contains("content-length:"));
+    assert!(request.ends_with("\r\n\r\n5\r\nhello\r\n6\r\n world\r\n0\r\n\r\n"));
+}
+
+#[tokio::test]
+async fn should_decode_chunked_response() {
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("listener should bind");
+    let address = listener.local_addr().expect("listener should have address");
+    let server = tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.expect("server should accept");
+        let mut request = [0; 1024];
+        let read = stream
+            .read(&mut request)
+            .await
+            .expect("server should read request");
+        assert!(read > 0);
+        stream
+            .write_all(b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nhello\r\n")
+            .await
+            .expect("server should write response");
+        stream
+            .write_all(b"1\r\n \r\n5\r\nworld\r\n0\r\n\r\n")
+            .await
+            .expect("server should write response");
+    });
+    let client = HttpClient::new(HttpClientConfig {
+        base_url: Some(format!("http://{address}")),
+        ..Default::default()
+    });
+
+    let response = client
+        .get("/stream", RequestOptions::default())
+        .await
+        .expect("request should succeed");
+
+    server.await.expect("server task should finish");
+    assert_eq!(
+        response.text().expect("response should be UTF-8"),
+        "hello world"
+    );
 }

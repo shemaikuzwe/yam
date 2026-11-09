@@ -8,6 +8,7 @@ use futures::{Stream, StreamExt};
 use serde::Serialize;
 use thiserror::Error;
 use tokio::io::{AsyncWrite, AsyncWriteExt};
+use yam_shared::IntoChunk;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum StatusCode {
@@ -271,14 +272,14 @@ impl<W: AsyncWrite + Unpin> ResponseWriter<W> {
         let response = Response::new().json(body);
         self.send_response(response).await
     }
-    pub async fn create_stream_response<S, E>(
+    pub async fn create_stream_response<S, T>(
         mut self,
         mut response: Response,
         stream: S,
     ) -> Result<(), HttpError>
     where
-        S: Stream<Item = Result<Vec<u8>, E>> + Unpin,
-        E: std::fmt::Display,
+        S: Stream<Item = T> + Unpin,
+        T: IntoChunk,
     {
         response
             .headers
@@ -291,8 +292,8 @@ impl<W: AsyncWrite + Unpin> ResponseWriter<W> {
         }
         self.writer.write_all(b"\r\n").await?;
         let mut stream = stream;
-        while let Some(chunk_result) = stream.next().await {
-            match chunk_result {
+        while let Some(chunk) = stream.next().await {
+            match chunk.into_chunk() {
                 Ok(chunk) if !chunk.is_empty() => {
                     // Write: <size-in-hex>\r\n<data>\r\n
                     self.writer
@@ -399,6 +400,24 @@ mod tests {
 
         assert!(output.ends_with(&[1, 2, 3, 4]));
     }
+    #[tokio::test]
+    async fn should_send_chunked_stream_response() {
+        let mut output = Vec::new();
+        ResponseWriter::new(&mut output)
+            .create_stream_response(
+                Response::new(),
+                futures::stream::iter([b"hello".to_vec(), b" world".to_vec()]),
+            )
+            .await
+            .unwrap();
+
+        let output = String::from_utf8(output).unwrap();
+
+        assert!(output.contains("transfer-encoding: chunked\r\n"));
+        assert!(!output.contains("content-length:"));
+        assert!(output.ends_with("\r\n\r\n5\r\nhello\r\n6\r\n world\r\n0\r\n\r\n"));
+    }
+
     #[tokio::test]
     async fn should_send_multiple_cookies_as_separate_headers() {
         let mut output = Vec::new();
