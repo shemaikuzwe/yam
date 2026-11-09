@@ -12,7 +12,7 @@ cargo add yam-http
 This enables the default features, `server` and `router`. The client is opt-in:
 
 ```sh
-cargo add yam --features client
+cargo add yam-http --features client
 ```
 
 | Feature | Default | Provides |
