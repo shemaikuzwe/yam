@@ -15,16 +15,15 @@
 //! # }
 //! ```
 
-pub mod cookie;
 pub mod headers;
 pub mod request;
 pub mod response;
 pub mod server;
-pub use headers::Headers;
-mod request_ext;
 
-pub use cookie::{Cookie, SameSite};
-pub use request::{Error, Request, RequestLine};
-pub use request_ext::Extensions;
+pub use headers::{Cookie, Headers, SameSite};
+pub use request::{
+    get_connection_type, ConnectionType, Error, Extensions, Method, ParamError, ParseError,
+    Request, RequestLine, RequestReader,
+};
 pub use response::{HttpError, IntoResponse, Json, Response, ResponseWriter, StatusCode};
 pub use server::{Handler, HandlerFuture, Server};

@@ -1,8 +1,7 @@
 use std::io;
 
 use crate::{
-    cookie::Cookie,
-    headers::Headers,
+    headers::{Cookie, Headers},
     request::{self, ParamError},
 };
 use futures::{Stream, StreamExt};
