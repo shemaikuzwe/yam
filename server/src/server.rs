@@ -1,11 +1,12 @@
-use std::{future::Future, io, pin::Pin, sync::Arc};
-
-use tokio::net::{TcpListener, TcpStream};
+use std::{future::Future, io, pin::Pin, sync::Arc, time::Duration};
 
 use crate::{
-    request::{Request, RequestReader},
+    Error,
+    request::{ConnectionType, Request, RequestReader, get_connection_type},
     response::{HttpError, IntoResponse, Response, ResponseWriter},
 };
+use tokio::net::{TcpListener, TcpStream};
+use tokio::time::timeout;
 
 pub struct Server;
 
@@ -41,29 +42,43 @@ impl Server {
     }
 }
 
-pub async fn handle_request(
-    mut stream: TcpStream,
-    handler: Arc<dyn Handler>,
-) -> Result<(), HttpError> {
-    let request = {
-        let mut request_reader = RequestReader::new(&mut stream);
-        request_reader.handle_request().await
-    };
-    let request = match request {
-        Ok(req) => req,
-        Err(err) => {
-            let response = HttpError::from(err).into_response();
-            ResponseWriter::new(stream).send_response(response).await?;
+pub async fn handle_request(stream: TcpStream, handler: Arc<dyn Handler>) -> Result<(), HttpError> {
+    let (read_stream, mut write_stream) = stream.into_split();
+
+    let mut request_reader = RequestReader::new(read_stream);
+    loop {
+        let request = match timeout(Duration::from_secs(30), request_reader.handle_request()).await
+        {
+            Err(_elapsed) => return Ok(()), // Idle too long: close without an error response.
+            Ok(Err(Error::GracefulEof)) => return Ok(()),
+            Ok(Err(err)) => {
+                let mut response = HttpError::from(err).into_response();
+                response
+                    .headers
+                    .set("connection", ConnectionType::Close.to_string());
+                ResponseWriter::new(&mut write_stream)
+                    .send_response(response)
+                    .await?;
+                return Ok(());
+            }
+            Ok(Ok(request)) => request,
+        };
+
+        let connection_type = get_connection_type(&request);
+
+        let mut response = match handler.call(request).await {
+            Ok(response) => response,
+            Err(err) => err.into_response(),
+        };
+        response
+            .headers
+            .set("connection", connection_type.to_string());
+        ResponseWriter::new(&mut write_stream)
+            .send_response(response)
+            .await?;
+
+        if connection_type == ConnectionType::Close {
             return Ok(());
         }
-    };
-
-    let response = match handler.call(request).await {
-        Ok(response) => response,
-        Err(err) => err.into_response(),
-    };
-
-    ResponseWriter::new(stream).send_response(response).await?;
-
-    Ok(())
+    }
 }

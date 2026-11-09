@@ -1,6 +1,7 @@
 use std::{
     cmp::min,
     collections::HashMap,
+    fmt,
     io::{self},
     str::FromStr,
 };
@@ -350,6 +351,8 @@ pub enum Error {
     RequestTooLarge,
     #[error("unexpected end of input")]
     UnexexpectedEndOfInput,
+    #[error("connection closed before the next request")]
+    GracefulEof,
     #[error("method not allowed")]
     MethodNotAllowed,
 }
@@ -400,26 +403,39 @@ impl<R: AsyncRead + Unpin> RequestReader<R> {
     }
     pub async fn handle_request(&mut self) -> Result<Request, Error> {
         let mut request = Request::new();
-        while !request.done() {
+
+        loop {
+            if self.buffer_index > 0 {
+                let read = request
+                    .parse(&self.buffer[..self.buffer_index])
+                    .map_err(Error::Parse)?;
+                self.buffer.copy_within(read..self.buffer_index, 0);
+                self.buffer_index -= read;
+
+                if request.done() {
+                    return Ok(request);
+                }
+            }
+
             if self.buffer_index == self.buffer.len() {
                 return Err(Error::RequestTooLarge);
             }
+
             let bytes_read = self
                 .reader
                 .read(&mut self.buffer[self.buffer_index..])
                 .await
                 .map_err(Error::Io)?;
+
             if bytes_read == 0 {
+                if self.buffer_index == 0 && request.parse_state == ParseState::Init {
+                    return Err(Error::GracefulEof);
+                }
                 return Err(Error::UnexexpectedEndOfInput);
             }
+
             self.buffer_index += bytes_read;
-            let read = request
-                .parse(&self.buffer[..self.buffer_index])
-                .map_err(Error::Parse)?;
-            self.buffer.copy_within(read..self.buffer_index, 0);
-            self.buffer_index -= read
         }
-        Ok(request)
     }
 }
 fn parse_request_line(data: &[u8]) -> Result<(RequestLine, usize), ParseError> {
@@ -468,6 +484,33 @@ fn parse_request_line(data: &[u8]) -> Result<(RequestLine, usize), ParseError> {
         },
         read,
     ))
+}
+#[derive(PartialEq)]
+pub enum ConnectionType {
+    KeepAlive,
+    Close,
+    //Upgrade
+}
+impl fmt::Display for ConnectionType {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match &self {
+            ConnectionType::Close => f.write_str("close"),
+            ConnectionType::KeepAlive => f.write_str("keep-alive"),
+        }
+    }
+}
+pub fn get_connection_type(request: &Request) -> ConnectionType {
+    let close = request
+        .headers
+        .get_all("connection")
+        .flat_map(|value| value.split(','))
+        .any(|token| token.trim().eq_ignore_ascii_case("close"));
+
+    if close {
+        ConnectionType::Close
+    } else {
+        ConnectionType::KeepAlive
+    }
 }
 
 #[cfg(test)]
@@ -730,4 +773,23 @@ mod tests {
         );
         assert_eq!(request.extensions().get::<AuthUser>(), None);
     }
+    #[tokio::test]
+    async fn reports_graceful_eof_before_a_request() {
+        let mut reader = RequestReader::new(&b""[..]);
+        assert!(matches!(
+            reader.handle_request().await,
+            Err(Error::GracefulEof)
+        ));
+    }
+    
+    #[tokio::test]
+    async fn reports_unexpected_eof_for_a_partial_request() {
+        let input = b"GET / HTTP/1.1\r\nHost: localhost\r\n";
+        let mut reader = RequestReader::new(&input[..]);
+        assert!(matches!(
+            reader.handle_request().await,
+            Err(Error::UnexexpectedEndOfInput)
+        ));
+    }
+
 }

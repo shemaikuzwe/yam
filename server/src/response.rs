@@ -64,7 +64,7 @@ impl Response {
     /// ```
     pub fn new() -> Self {
         let mut headers = Headers::new();
-        headers.set("connection", "close".to_string());
+        headers.set("connection", "keep-alive".to_string());
         headers.set("content-type", "text/plain".to_string());
         Self {
             status: StatusCode::StatusOk,
