@@ -43,14 +43,14 @@ impl AppError {
     pub fn status_code(&self) -> StatusCode {
         match &self {
             AppError::InvalidCredentials | AppError::Uuid(_) | AppError::Http(_) => {
-                StatusCode::StatusBadRequest
+                StatusCode::BadRequest
             }
-            AppError::EmailAlreadyExists => StatusCode::StatusConflict,
-            AppError::UnAuthorized => StatusCode::StatusUnauthorized,
-            AppError::InvalidToken => StatusCode::StatusBadRequest,
-            AppError::NotFound => StatusCode::StatusFound,
-            AppError::Database(_) | AppError::Password(_) => StatusCode::StatusInternalServerError,
-            AppError::InternalServerError => StatusCode::StatusInternalServerError,
+            AppError::EmailAlreadyExists => StatusCode::Conflict,
+            AppError::UnAuthorized => StatusCode::Unauthorized,
+            AppError::InvalidToken => StatusCode::BadRequest,
+            AppError::NotFound => StatusCode::NotFound,
+            AppError::Database(_) | AppError::Password(_) => StatusCode::InternalServerError,
+            AppError::InternalServerError => StatusCode::InternalServerError,
         }
     }
 }

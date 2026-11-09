@@ -131,7 +131,7 @@ mod tests {
             .await
             .expect("handler should succeed");
 
-        assert_eq!(response.status, StatusCode::StatusOk);
+        assert_eq!(response.status, StatusCode::Ok);
         assert_eq!(response.body, b"users");
     }
 
@@ -146,7 +146,7 @@ mod tests {
             .await
             .expect("handler should succeed");
 
-        assert_eq!(response.status, StatusCode::StatusOk);
+        assert_eq!(response.status, StatusCode::Ok);
         assert_eq!(response.body, b"ok");
     }
 }

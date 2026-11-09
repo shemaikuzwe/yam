@@ -1,6 +1,7 @@
 use std::{collections::HashMap, format, future::Future, io, sync::Arc};
 
 use matchit::Router as MatchRouter;
+use percent_encoding::percent_decode_str;
 use tokio::net::TcpListener;
 use yam_server::{
     Handler, HandlerFuture, Request, Response, Server, StatusCode, request::Method,
@@ -83,7 +84,7 @@ impl Router {
         #[doc = "app.post(\"/users\", async |request: Request| -> Result<Response, HttpError> {"]
         #[doc = "    let input: CreateUser = request.json()?;"]
         #[doc = "    Ok(Response::new()"]
-        #[doc = "        .status(StatusCode::StatusCreated)"]
+        #[doc = "        .status(StatusCode::Created)"]
         #[doc = "        .json(&json!({ \"id\": 42, \"email\": input.email })))"]
         #[doc = "});"]
         #[doc = "```"]
@@ -142,7 +143,7 @@ impl Router {
         #[doc = "    let id: u64 = request.param_as(\"id\")?;"]
         #[doc = "    // Delete the user identified by `id` from storage."]
         #[doc = "    let _ = id;"]
-        #[doc = "    Ok(Response::new().status(StatusCode::StatusNoContent))"]
+        #[doc = "    Ok(Response::new().status(StatusCode::NoContent))"]
         #[doc = "});"]
         #[doc = "```"]
         delete => DELETE
@@ -220,18 +221,48 @@ impl Handler for Router {
                 let params = matched
                     .params
                     .iter()
-                    .map(|(name, value)| (name.to_string(), value.to_string()))
+                    .map(|(name, value)| {
+                        let decoded = percent_decode_str(value)
+                            .decode_utf8_lossy()
+                            .into_owned();
+                        (name.to_string(), decoded)
+                    })
                     .collect::<HashMap<_, _>>();
                 (handler, params, true)
             }
             None => {
-                let path_exists = self.routes.values().any(|route| route.at(path).is_ok());
-                let (status, message) = match path_exists {
-                    true => (StatusCode::StatusMethodNotAllowed, "Method not allowed"),
-                    false => (StatusCode::StatusNotFound, "Not Found"),
+                let allow = [
+                    (Method::GET, "GET"),
+                    (Method::POST, "POST"),
+                    (Method::PATCH, "PATCH"),
+                    (Method::PUT, "PUT"),
+                    (Method::DELETE, "DELETE"),
+                ]
+                .into_iter()
+                .filter(|(method, _)| {
+                    self.routes
+                        .get(method)
+                        .is_some_and(|routes| routes.at(path).is_ok())
+                })
+                .map(|(_, method)| method)
+                .collect::<Vec<_>>()
+                .join(", ");
+                let (status, message) = if allow.is_empty() {
+                    (StatusCode::NotFound, "Not Found")
+                } else {
+                    (StatusCode::MethodNotAllowed, "Method not allowed")
                 };
-                let handler: Arc<dyn Handler> = Arc::new(move |_req: Request| async move {
-                    Response::new().status(status).send(message)
+                let handler: Arc<dyn Handler> = Arc::new(move |_req: Request| {
+                    let allow = allow.clone();
+                    async move {
+                        let response = Response::new().status(status);
+                        let response = if status == StatusCode::MethodNotAllowed {
+                            response.set("allow", &allow)
+                        } else {
+                            response
+                        };
+                        response.send(message)
+                    }
                 });
                 (handler, HashMap::new(), false)
             }
@@ -268,7 +299,7 @@ mod tests {
             .await
             .expect("handler should succeed");
 
-        assert_eq!(response.status, StatusCode::StatusOk);
+        assert_eq!(response.status, StatusCode::Ok);
         assert_eq!(response.body, b"users");
     }
 
@@ -293,7 +324,7 @@ mod tests {
                 .await
                 .expect("handler should succeed");
 
-            assert_eq!(response.status, StatusCode::StatusOk);
+            assert_eq!(response.status, StatusCode::Ok);
             assert_eq!(response.body, method.as_bytes());
         }
     }
@@ -322,20 +353,22 @@ mod tests {
             .await
             .expect("router should return a response");
 
-        assert_eq!(response.status, StatusCode::StatusNotFound);
+        assert_eq!(response.status, StatusCode::NotFound);
     }
 
     #[tokio::test]
     async fn should_return_method_not_allowed_for_existing_path() {
         let mut router = Router::new(RouterConfig::default());
         router.get("/users", |_| async { "users" });
+        router.post("/users", |_| async { "created" });
 
         let response = router
-            .call(request("POST", "/users"))
+            .call(request("DELETE", "/users"))
             .await
             .expect("router should return a response");
 
-        assert_eq!(response.status, StatusCode::StatusMethodNotAllowed);
+        assert_eq!(response.status, StatusCode::MethodNotAllowed);
+        assert_eq!(response.headers.get("allow"), Some("GET, POST"));
     }
 
     #[tokio::test]
@@ -349,7 +382,7 @@ mod tests {
                 .await
                 .expect("handler should succeed");
 
-            assert_eq!(response.status, StatusCode::StatusOk);
+            assert_eq!(response.status, StatusCode::Ok);
         }
     }
 
@@ -366,7 +399,7 @@ mod tests {
             .await
             .expect("router should return a response");
 
-        assert_eq!(response.status, StatusCode::StatusNotFound);
+        assert_eq!(response.status, StatusCode::NotFound);
     }
 
     #[tokio::test]
@@ -382,7 +415,7 @@ mod tests {
             .await
             .expect("handler should succeed");
 
-        assert_eq!(response.status, StatusCode::StatusOk);
+        assert_eq!(response.status, StatusCode::Ok);
     }
 
     #[tokio::test]
@@ -439,8 +472,8 @@ mod tests {
         router.get("/users", |_| async { "users" });
 
         for (method, expected) in [
-            ("GET", StatusCode::StatusNotFound),
-            ("POST", StatusCode::StatusMethodNotAllowed),
+            ("GET", StatusCode::NotFound),
+            ("POST", StatusCode::MethodNotAllowed),
         ] {
             let path = if method == "POST" {
                 "/users"
@@ -490,8 +523,8 @@ mod tests {
             .await
             .expect("router should return a response");
 
-        assert_eq!(response.status, StatusCode::StatusNotFound);
-        assert_eq!(*seen.lock().unwrap(), [StatusCode::StatusNotFound]);
+        assert_eq!(response.status, StatusCode::NotFound);
+        assert_eq!(*seen.lock().unwrap(), [StatusCode::NotFound]);
     }
 
     #[tokio::test]
@@ -500,7 +533,7 @@ mod tests {
         let mut router = Router::new(RouterConfig::default());
         router.middleware(|_request, _next: Next| async {
             Ok(Response::new()
-                .status(StatusCode::StatusUnauthorized)
+                .status(StatusCode::Unauthorized)
                 .send("Unauthorized"))
         });
 
@@ -515,7 +548,57 @@ mod tests {
             .await
             .expect("middleware should return a response");
 
-        assert_eq!(response.status, StatusCode::StatusUnauthorized);
+        assert_eq!(response.status, StatusCode::Unauthorized);
         assert!(!handler_called.load(Ordering::SeqCst));
+    }
+
+    #[tokio::test]
+    async fn should_percent_decode_path_parameters() {
+        let mut router = Router::new(RouterConfig::default());
+        router.get("/users/{name}", |request| async move {
+            request.param("name").unwrap_or_default().to_string()
+        });
+
+        let response = router
+            .call(request("GET", "/users/john%20doe"))
+            .await
+            .expect("handler should succeed");
+
+        assert_eq!(response.body, b"john doe");
+    }
+
+    #[tokio::test]
+    async fn should_preserve_segments_with_encoded_slash() {
+        let mut router = Router::new(RouterConfig::default());
+        router.get("/files/{path}", |request| async move {
+            request.param("path").unwrap_or_default().to_string()
+        });
+
+        // %2F should NOT split into multiple segments during routing;
+        // matchit sees the raw "nested%2Ffile.txt" as one segment,
+        // then we decode it to "nested/file.txt" in the param value.
+        let response = router
+            .call(request("GET", "/files/nested%2Ffile.txt"))
+            .await
+            .expect("handler should succeed");
+
+        assert_eq!(response.status, StatusCode::Ok);
+        assert_eq!(response.body, b"nested/file.txt");
+    }
+
+    #[tokio::test]
+    async fn should_decode_multibyte_utf8_in_path_parameters() {
+        let mut router = Router::new(RouterConfig::default());
+        router.get("/tags/{tag}", |request| async move {
+            request.param("tag").unwrap_or_default().to_string()
+        });
+
+        // "café" = 63 61 66 C3 A9 → /tags/caf%C3%A9
+        let response = router
+            .call(request("GET", "/tags/caf%C3%A9"))
+            .await
+            .expect("handler should succeed");
+
+        assert_eq!(response.body, "café".as_bytes());
     }
 }

@@ -58,7 +58,7 @@ async fn main() -> std::io::Result<()> {
             .same_site(SameSite::Lax);
 
         Response::new()
-            .status(StatusCode::StatusCreated)
+            .status(StatusCode::Created)
             .cookie(cookie)
             .json(&user)
     });

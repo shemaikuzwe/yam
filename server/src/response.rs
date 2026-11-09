@@ -12,34 +12,34 @@ use yam_shared::IntoChunk;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum StatusCode {
-    StatusOk = 200,
-    StatusCreated = 201,
-    StatusAccepted = 202,
-    StatusNoContent = 204,
-    StatusMovedPermanently = 301,
-    StatusFound = 302,
-    StatusSeeOther = 303,
-    StatusNotModified = 304,
-    StatusTemporaryRedirect = 307,
-    StatusPermanentRedirect = 308,
-    StatusBadRequest = 400,
-    StatusUnauthorized = 401,
-    StatusForbidden = 403,
-    StatusNotFound = 404,
-    StatusMethodNotAllowed = 405,
-    StatusNotAcceptable = 406,
-    StatusRequestTimeout = 408,
-    StatusConflict = 409,
-    StatusContentTooLarge = 413,
-    StatusUnsupportedMediaType = 415,
-    StatusUnprocessableContent = 422,
-    StatusTooManyRequests = 429,
-    StatusInternalServerError = 500,
-    StatusNotImplemented = 501,
-    StatusBadGateway = 502,
-    StatusServiceUnavailable = 503,
-    StatusGatewayTimeout = 504,
-    StatusHttpVersionNotSupported = 505,
+    Ok = 200,
+    Created = 201,
+    Accepted = 202,
+    NoContent = 204,
+    MovedPermanently = 301,
+    Found = 302,
+    SeeOther = 303,
+    NotModified = 304,
+    TemporaryRedirect = 307,
+    PermanentRedirect = 308,
+    BadRequest = 400,
+    Unauthorized = 401,
+    Forbidden = 403,
+    NotFound = 404,
+    MethodNotAllowed = 405,
+    NotAcceptable = 406,
+    RequestTimeout = 408,
+    Conflict = 409,
+    ContentTooLarge = 413,
+    UnsupportedMediaType = 415,
+    UnprocessableContent = 422,
+    TooManyRequests = 429,
+    InternalServerError = 500,
+    NotImplemented = 501,
+    BadGateway = 502,
+    ServiceUnavailable = 503,
+    GatewayTimeout = 504,
+    HttpVersionNotSupported = 505,
 }
 
 #[derive(Debug)]
@@ -60,14 +60,14 @@ impl Response {
     /// ```
     /// use yam_server::{Response, StatusCode};
     /// let response = Response::new();
-    /// assert_eq!(response.status, StatusCode::StatusOk);
+    /// assert_eq!(response.status, StatusCode::Ok);
     /// ```
     pub fn new() -> Self {
         let mut headers = Headers::new();
         headers.set("connection", "keep-alive".to_string());
         headers.set("content-type", "text/plain".to_string());
         Self {
-            status: StatusCode::StatusOk,
+            status: StatusCode::Ok,
             headers,
             body: Vec::new(),
         }
@@ -76,8 +76,8 @@ impl Response {
     ///
     /// ```
     /// use yam_server::{Response, StatusCode};
-    /// let response = Response::new().status(StatusCode::StatusCreated);
-    /// assert_eq!(response.status, StatusCode::StatusCreated);
+    /// let response = Response::new().status(StatusCode::Created);
+    /// assert_eq!(response.status, StatusCode::Created);
     /// ```
     pub fn status(mut self, status: StatusCode) -> Self {
         self.status = status;
@@ -117,7 +117,7 @@ impl Response {
         match serde_json::to_vec(body) {
             Ok(body) => self.set("content-type", "application/json").send(body),
             Err(err) => Response::new()
-                .status(StatusCode::StatusInternalServerError)
+                .status(StatusCode::InternalServerError)
                 .send(format!("failed to serialize response: {err}")),
         }
     }
@@ -186,7 +186,7 @@ impl IntoResponse for serde_json::Value {
 /// }
 ///
 /// let response = get_users().into_response();
-/// assert_eq!(response.status, StatusCode::StatusOk);
+/// assert_eq!(response.status, StatusCode::Ok);
 /// assert_eq!(response.body, br#"[{"id":1}]"#);
 /// ```
 #[derive(Debug)]
@@ -211,34 +211,34 @@ impl<W: AsyncWrite + Unpin> ResponseWriter<W> {
     }
     async fn write_status_line(&mut self, status: StatusCode) -> io::Result<()> {
         let (code, reason) = match status {
-            StatusCode::StatusOk => (200, "OK"),
-            StatusCode::StatusCreated => (201, "Created"),
-            StatusCode::StatusAccepted => (202, "Accepted"),
-            StatusCode::StatusNoContent => (204, "No Content"),
-            StatusCode::StatusMovedPermanently => (301, "Moved Permanently"),
-            StatusCode::StatusFound => (302, "Found"),
-            StatusCode::StatusSeeOther => (303, "See Other"),
-            StatusCode::StatusNotModified => (304, "Not Modified"),
-            StatusCode::StatusTemporaryRedirect => (307, "Temporary Redirect"),
-            StatusCode::StatusPermanentRedirect => (308, "Permanent Redirect"),
-            StatusCode::StatusBadRequest => (400, "Bad Request"),
-            StatusCode::StatusUnauthorized => (401, "Unauthorized"),
-            StatusCode::StatusForbidden => (403, "Forbidden"),
-            StatusCode::StatusNotFound => (404, "Not Found"),
-            StatusCode::StatusMethodNotAllowed => (405, "Method Not Allowed"),
-            StatusCode::StatusNotAcceptable => (406, "Not Acceptable"),
-            StatusCode::StatusRequestTimeout => (408, "Request Timeout"),
-            StatusCode::StatusConflict => (409, "Conflict"),
-            StatusCode::StatusContentTooLarge => (413, "Content Too Large"),
-            StatusCode::StatusUnsupportedMediaType => (415, "Unsupported Media Type"),
-            StatusCode::StatusUnprocessableContent => (422, "Unprocessable Content"),
-            StatusCode::StatusTooManyRequests => (429, "Too Many Requests"),
-            StatusCode::StatusInternalServerError => (500, "Internal Server Error"),
-            StatusCode::StatusNotImplemented => (501, "Not Implemented"),
-            StatusCode::StatusBadGateway => (502, "Bad Gateway"),
-            StatusCode::StatusServiceUnavailable => (503, "Service Unavailable"),
-            StatusCode::StatusGatewayTimeout => (504, "Gateway Timeout"),
-            StatusCode::StatusHttpVersionNotSupported => (505, "HTTP Version Not Supported"),
+            StatusCode::Ok => (200, "OK"),
+            StatusCode::Created => (201, "Created"),
+            StatusCode::Accepted => (202, "Accepted"),
+            StatusCode::NoContent => (204, "No Content"),
+            StatusCode::MovedPermanently => (301, "Moved Permanently"),
+            StatusCode::Found => (302, "Found"),
+            StatusCode::SeeOther => (303, "See Other"),
+            StatusCode::NotModified => (304, "Not Modified"),
+            StatusCode::TemporaryRedirect => (307, "Temporary Redirect"),
+            StatusCode::PermanentRedirect => (308, "Permanent Redirect"),
+            StatusCode::BadRequest => (400, "Bad Request"),
+            StatusCode::Unauthorized => (401, "Unauthorized"),
+            StatusCode::Forbidden => (403, "Forbidden"),
+            StatusCode::NotFound => (404, "Not Found"),
+            StatusCode::MethodNotAllowed => (405, "Method Not Allowed"),
+            StatusCode::NotAcceptable => (406, "Not Acceptable"),
+            StatusCode::RequestTimeout => (408, "Request Timeout"),
+            StatusCode::Conflict => (409, "Conflict"),
+            StatusCode::ContentTooLarge => (413, "Content Too Large"),
+            StatusCode::UnsupportedMediaType => (415, "Unsupported Media Type"),
+            StatusCode::UnprocessableContent => (422, "Unprocessable Content"),
+            StatusCode::TooManyRequests => (429, "Too Many Requests"),
+            StatusCode::InternalServerError => (500, "Internal Server Error"),
+            StatusCode::NotImplemented => (501, "Not Implemented"),
+            StatusCode::BadGateway => (502, "Bad Gateway"),
+            StatusCode::ServiceUnavailable => (503, "Service Unavailable"),
+            StatusCode::GatewayTimeout => (504, "Gateway Timeout"),
+            StatusCode::HttpVersionNotSupported => (505, "HTTP Version Not Supported"),
         };
         self.writer
             .write_all(format!("HTTP/1.1 {code} {reason}\r\n").as_bytes())
@@ -341,21 +341,21 @@ pub enum HttpError {
 impl HttpError {
     pub fn status(&self) -> StatusCode {
         match self {
-            HttpError::Io(_) => StatusCode::StatusInternalServerError,
+            HttpError::Io(_) => StatusCode::InternalServerError,
             HttpError::Request(request::Error::RequestTooLarge) => {
-                StatusCode::StatusContentTooLarge
+                StatusCode::ContentTooLarge
             }
             HttpError::Request(request::Error::MethodNotAllowed) => {
-                StatusCode::StatusNotImplemented
+                StatusCode::NotImplemented
             }
             HttpError::Request(request::Error::Parse(
                 request::ParseError::UnsupportedHttpVersion,
-            )) => StatusCode::StatusHttpVersionNotSupported,
+            )) => StatusCode::HttpVersionNotSupported,
             HttpError::Json(_)
             | HttpError::Form(_)
             | HttpError::Utf8(_)
             | HttpError::Request(_)
-            | HttpError::Param(_) => StatusCode::StatusBadRequest,
+            | HttpError::Param(_) => StatusCode::BadRequest,
         }
     }
 }
@@ -376,7 +376,7 @@ mod tests {
         ResponseWriter::new(&mut output)
             .send_response(
                 Response::new()
-                    .status(StatusCode::StatusOk)
+                    .status(StatusCode::Ok)
                     .set("content-type", "text/plain")
                     .send("Hello"),
             )

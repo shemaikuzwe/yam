@@ -11,7 +11,7 @@ async fn should_send_plain_text_response() {
     let mut output = Vec::new();
 
     let response = Response::new()
-        .status(StatusCode::StatusOk)
+        .status(StatusCode::Ok)
         .set("content-type", "text/plain")
         .send("Hello");
     ResponseWriter::new(&mut output)
@@ -69,7 +69,7 @@ async fn should_send_binary_body() {
 async fn should_send_not_found_status() {
     let mut output = Vec::new();
     let response = Response::new()
-        .status(StatusCode::StatusNotFound)
+        .status(StatusCode::NotFound)
         .send("Not found");
     ResponseWriter::new(&mut output)
         .send_response(response)
@@ -88,7 +88,7 @@ async fn should_convert_http_error_to_response() {
     let err = serde_json::from_str::<serde_json::Value>("{bad").unwrap_err();
     let response = HttpError::Json(err).into_response();
 
-    assert_eq!(response.status, StatusCode::StatusBadRequest);
+    assert_eq!(response.status, StatusCode::BadRequest);
     assert!(!response.body.is_empty());
 }
 
@@ -97,17 +97,17 @@ fn should_map_specific_request_errors_to_statuses() {
     let cases = [
         (
             yam_server::request::Error::RequestTooLarge,
-            StatusCode::StatusContentTooLarge,
+            StatusCode::ContentTooLarge,
         ),
         (
             yam_server::request::Error::MethodNotAllowed,
-            StatusCode::StatusNotImplemented,
+            StatusCode::NotImplemented,
         ),
         (
             yam_server::request::Error::Parse(
                 yam_server::request::ParseError::UnsupportedHttpVersion,
             ),
-            StatusCode::StatusHttpVersionNotSupported,
+            StatusCode::HttpVersionNotSupported,
         ),
     ];
 

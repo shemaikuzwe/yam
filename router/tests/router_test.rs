@@ -69,11 +69,13 @@ async fn should_return_not_found_response() {
 async fn should_return_method_not_allowed_response() {
     let mut router = Router::new(RouterConfig::default());
     router.get("/users", |_| async { "users" });
+    router.post("/users", |_| async { "created" });
     let (address, server) = spawn_router(router).await;
 
-    let response = send_request(address, "POST /users HTTP/1.1\r\n\r\n").await;
+    let response = send_request(address, "DELETE /users HTTP/1.1\r\n\r\n").await;
     server.abort();
 
     assert!(response.starts_with("HTTP/1.1 405 Method Not Allowed\r\n"));
+    assert!(response.contains("allow: GET, POST\r\n"));
     assert!(response.ends_with("\r\n\r\nMethod not allowed"));
 }

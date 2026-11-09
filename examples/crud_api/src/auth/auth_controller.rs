@@ -12,7 +12,7 @@ pub async fn sign_up(req: Request) -> Result<Response, AppError> {
     let payload: Signup = req.json()?;
     let result = auth_service::signup(payload).await?;
     let res = Response::new()
-        .status(yam_http::server::StatusCode::StatusCreated)
+        .status(yam_http::server::StatusCode::Created)
         .cookie(result.cookie)
         .json(&ApiResponse {
             data: Some(result.payload),
