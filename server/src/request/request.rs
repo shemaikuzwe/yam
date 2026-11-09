@@ -2,6 +2,7 @@ use std::{cmp::min, collections::HashMap};
 
 use crate::headers::Headers;
 
+use super::chunked::parse_chunked_body;
 use super::error::ParseError;
 use super::request_ext::Extensions;
 use super::request_line::{parse_request_line, RequestLine};
@@ -47,6 +48,12 @@ impl Request {
     }
 
     fn has_body(&self) -> bool {
+        // Check for Transfer-Encoding: chunked
+        if self.is_chunked() {
+            return true;
+        }
+
+        // Check for Content-Length
         let content_length = self.headers.get("content-length");
         if content_length.is_none() {
             return false;
@@ -56,6 +63,12 @@ impl Request {
             return false;
         }
         true
+    }
+
+    fn is_chunked(&self) -> bool {
+        self.headers
+            .get_all("transfer-encoding")
+            .any(|value| value.split(',').any(|token| token.trim().eq_ignore_ascii_case("chunked")))
     }
 
     pub fn parse(&mut self, data: &[u8]) -> Result<usize, ParseError> {
@@ -89,12 +102,20 @@ impl Request {
                         if self.has_body() {
                             self.parse_state = ParseState::Body
                         } else {
-                            self.parse_state = ParseState::Done
+                            self.parse_state = ParseState::Done;
                         }
                     }
                 }
                 ParseState::Body => {
                     const MAX_BODY_SIZE: usize = 2 * 1024 * 1024;
+                    if self.is_chunked() {
+                        let (consumed, done) = parse_chunked_body(curr_data, &mut self.body, MAX_BODY_SIZE)?;
+                        read += consumed;
+                        if done {
+                            self.parse_state = ParseState::Done;
+                        }
+                        return Ok(read);
+                    }
                     let length = self
                         .headers
                         .get("content-length")
@@ -240,5 +261,123 @@ mod tests {
             Some(AuthUser { id: 7 })
         );
         assert_eq!(request.extensions().get::<AuthUser>(), None);
+    }
+
+    #[test]
+    fn should_parse_chunked_request_body() {
+        let mut request = Request::new();
+        
+        // Parse request line and headers
+        let data = b"POST /upload HTTP/1.1\r\nTransfer-Encoding: chunked\r\n\r\n";
+        let consumed = request.parse(data).expect("Should parse headers");
+        assert_eq!(consumed, data.len());
+
+        // Parse first chunk: "7\r\nMozilla\r\n"
+        let chunk1 = b"7\r\nMozilla\r\n";
+        let consumed = request.parse(chunk1).expect("Should parse first chunk");
+        assert_eq!(consumed, chunk1.len());
+        assert_eq!(&request.body, b"Mozilla");
+
+        // Parse second chunk: "9\r\nDeveloper\r\n"
+        let chunk2 = b"9\r\nDeveloper\r\n";
+        let consumed = request.parse(chunk2).expect("Should parse second chunk");
+        assert_eq!(consumed, chunk2.len());
+        assert_eq!(&request.body, b"MozillaDeveloper");
+
+        // Parse last chunk: "0\r\n\r\n"
+        let last_chunk = b"0\r\n\r\n";
+        let consumed = request.parse(last_chunk).expect("Should parse last chunk");
+        assert_eq!(consumed, last_chunk.len());
+        assert!(request.done());
+        assert_eq!(&request.body, b"MozillaDeveloper");
+    }
+
+    #[test]
+    fn should_parse_chunked_request_all_at_once() {
+        let mut request = Request::new();
+        
+        let data = concat!(
+            "POST /upload HTTP/1.1\r\n",
+            "Transfer-Encoding: chunked\r\n",
+            "\r\n",
+            "7\r\n",
+            "Mozilla\r\n",
+            "9\r\n",
+            "Developer\r\n",
+            "7\r\n",
+            "Network\r\n",
+            "0\r\n",
+            "\r\n"
+        ).as_bytes();
+
+        let consumed = request.parse(data).expect("Should parse");
+        assert_eq!(consumed, data.len());
+        assert!(request.done());
+        assert_eq!(&request.body, b"MozillaDeveloperNetwork");
+    }
+
+    #[test]
+    fn should_parse_chunked_with_extensions() {
+        let mut request = Request::new();
+        
+        let data = concat!(
+            "POST /api HTTP/1.1\r\n",
+            "Transfer-Encoding: chunked\r\n",
+            "\r\n",
+            "5;name=value\r\n",
+            "hello\r\n",
+            "0\r\n",
+            "\r\n"
+        ).as_bytes();
+
+        let consumed = request.parse(data).expect("Should parse with extensions");
+        assert_eq!(consumed, data.len());
+        assert!(request.done());
+        assert_eq!(&request.body, b"hello");
+    }
+
+    #[test]
+    fn should_parse_chunked_with_trailing_headers() {
+        let mut request = Request::new();
+        
+        let data = concat!(
+            "POST /api HTTP/1.1\r\n",
+            "Transfer-Encoding: chunked\r\n",
+            "\r\n",
+            "5\r\n",
+            "hello\r\n",
+            "0\r\n",
+            "X-Checksum: abc123\r\n",
+            "\r\n"
+        ).as_bytes();
+
+        let consumed = request.parse(data).expect("Should parse with trailing headers");
+        assert_eq!(consumed, data.len());
+        assert!(request.done());
+        assert_eq!(&request.body, b"hello");
+    }
+
+    #[test]
+    fn should_error_on_invalid_chunk_size() {
+        let mut request = Request::new();
+        
+        let data = concat!(
+            "POST /api HTTP/1.1\r\n",
+            "Transfer-Encoding: chunked\r\n",
+            "\r\n",
+            "xyz\r\n"
+        ).as_bytes();
+
+        let result = request.parse(data);
+        assert!(matches!(result, Err(ParseError::InvalidChunkSize)));
+    }
+
+    #[test]
+    fn should_error_on_missing_chunk_end_crlf() {
+        let mut request = Request::new();
+        
+        let data = b"POST /api HTTP/1.1\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nhello--";
+        let result = request.parse(data);
+        assert!(matches!(result, Err(ParseError::InvalidChunkedEncoding)));
     }
 }

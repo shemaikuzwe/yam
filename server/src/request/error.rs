@@ -20,6 +20,12 @@ pub enum ParseError {
     InvalidContentLengthHeader,
     #[error("request too large")]
     RequestTooLarge,
+    #[error("incomplete chunk size")]
+    IncompleteChunkSize,
+    #[error("invalid chunk size")]
+    InvalidChunkSize,
+    #[error("invalid chunked encoding")]
+    InvalidChunkedEncoding,
 }
 
 impl From<HeaderParseError> for ParseError {

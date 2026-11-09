@@ -86,15 +86,12 @@ impl Request {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::HashMap;
 
     use serde::Deserialize;
 
-    use crate::headers::Headers;
 
     use super::*;
 
-    use super::super::request_ext::Extensions;
     use super::super::request_line::RequestLine;
 
     #[derive(Deserialize)]
@@ -105,14 +102,8 @@ mod tests {
 
     #[test]
     fn should_desirialize_valid_json() {
-        let request = Request {
-            path_params: HashMap::new(),
-            request_line: RequestLine::default(),
-            headers: Headers::new(),
-            body: br#"{"email":"user@example.com","password":"1234"}"#.to_vec(),
-            parse_state: super::super::request::ParseState::Done,
-            extensions: Extensions::default(),
-        };
+        let mut request = Request::new();
+        request.body = br#"{"email":"user@example.com","password":"1234"}"#.to_vec();
         let login: Login = request.json().expect("Should be desirialized");
         assert_eq!(login.email, "user@example.com");
         assert_eq!(login.password, "1234");
@@ -129,19 +120,15 @@ mod tests {
 
     #[test]
     fn should_return_utf8_string() {
-        let request = Request {
-            body: b"hello".to_vec(),
-            ..Request::new()
-        };
+        let mut request = Request::new();
+        request.body = b"hello".to_vec();
         assert_eq!(request.text().expect("utf8"), "hello");
     }
 
     #[test]
     fn should_deserialize_urlencoded() {
-        let request = Request {
-            body: b"email=user%40example.com&password=1234".to_vec(),
-            ..Request::new()
-        };
+        let mut request = Request::new();
+        request.body = b"email=user%40example.com&password=1234".to_vec();
         let form: Login = request.form_data().expect("valid form should deserialize");
         assert_eq!(form.email, "user@example.com");
         assert_eq!(form.password, "1234");
