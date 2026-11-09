@@ -1,14 +1,14 @@
 use std::io;
 
-use serde::Serialize;
-use thiserror::Error;
-use tokio::io::{AsyncWrite, AsyncWriteExt};
-
 use crate::{
     cookie::Cookie,
     headers::Headers,
     request::{self, ParamError},
 };
+use futures::{Stream, StreamExt};
+use serde::Serialize;
+use thiserror::Error;
+use tokio::io::{AsyncWrite, AsyncWriteExt};
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum StatusCode {
@@ -271,6 +271,49 @@ impl<W: AsyncWrite + Unpin> ResponseWriter<W> {
     pub async fn json(self, body: &impl Serialize) -> Result<(), HttpError> {
         let response = Response::new().json(body);
         self.send_response(response).await
+    }
+    pub async fn create_stream_response<S, E>(
+        mut self,
+        mut response: Response,
+        stream: S,
+    ) -> Result<(), HttpError>
+    where
+        S: Stream<Item = Result<Vec<u8>, E>> + Unpin,
+        E: std::fmt::Display,
+    {
+        response
+            .headers
+            .set("transfer-encoding", "chunked".to_string());
+        self.write_status_line(response.status).await?;
+        for (k, v) in response.headers.iter() {
+            self.writer
+                .write_all(format!("{k}: {v}\r\n").as_bytes())
+                .await?;
+        }
+        self.writer.write_all(b"\r\n").await?;
+        let mut stream = stream;
+        while let Some(chunk_result) = stream.next().await {
+            match chunk_result {
+                Ok(chunk) if !chunk.is_empty() => {
+                    // Write: <size-in-hex>\r\n<data>\r\n
+                    self.writer
+                        .write_all(format!("{:x}\r\n", chunk.len()).as_bytes())
+                        .await?;
+                    self.writer.write_all(&chunk).await?;
+                    self.writer.write_all(b"\r\n").await?;
+                }
+                Ok(_) => {} // Skip empty chunks
+                Err(e) => {
+                    eprintln!("Stream error: {}", e);
+                    break;
+                }
+            }
+        }
+
+        // Write terminating chunk: 0\r\n\r\n
+        self.writer.write_all(b"0\r\n\r\n").await?;
+        self.writer.flush().await?;
+        Ok(())
     }
 }
 
