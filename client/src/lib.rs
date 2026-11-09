@@ -20,6 +20,7 @@
 //! ```
 
 mod client;
+mod compression;
 mod error;
 mod request;
 mod response;

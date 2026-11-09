@@ -222,6 +222,9 @@ let response = client
         for (name, value) in options.headers {
             headers.set(&name, value);
         }
+        if headers.get("accept-encoding").is_none() {
+            headers.set("accept-encoding", "gzip, deflate".into());
+        }
         headers.set("host", format!("{host}:{port}"));
         headers.set("connection", "keep-alive".into());
         if chunks.is_some() {

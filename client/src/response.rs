@@ -2,10 +2,12 @@ use serde::de::DeserializeOwned;
 use tokio::io::{AsyncRead, AsyncReadExt};
 use yam_shared::chunked::parse_chunked_body;
 
-use crate::error::Error;
+use crate::{compression, error::Error};
 
 const SEPARATOR: &[u8] = b"\r\n\r\n";
 
+/// An HTTP response. Response bodies with supported `content-encoding` values
+/// (such as `gzip` and `deflate`) are automatically decompressed.
 #[derive(Debug)]
 pub struct Response {
     pub status: u16,
@@ -95,7 +97,7 @@ impl Response {
             }
         };
 
-        let (status, headers) = parse_head(&buffer[..idx])?;
+        let (status, mut headers) = parse_head(&buffer[..idx])?;
         let mut body = buffer[idx + SEPARATOR.len()..].to_vec();
 
         if has_body(status) {
@@ -127,6 +129,8 @@ impl Response {
         } else {
             body.clear();
         }
+
+        let body = compression::decode(&mut headers, body)?;
 
         Ok(Response {
             status,
