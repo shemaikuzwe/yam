@@ -14,19 +14,38 @@ pub enum Method {
     OPTIONS,
 }
 
+impl Method {
+    /// Every supported method, in the order used for `Allow` headers.
+    pub const ALL: [Method; 7] = [
+        Method::GET,
+        Method::HEAD,
+        Method::POST,
+        Method::PATCH,
+        Method::PUT,
+        Method::DELETE,
+        Method::OPTIONS,
+    ];
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::GET => "GET",
+            Self::HEAD => "HEAD",
+            Self::POST => "POST",
+            Self::PATCH => "PATCH",
+            Self::PUT => "PUT",
+            Self::DELETE => "DELETE",
+            Self::OPTIONS => "OPTIONS",
+        }
+    }
+}
+
 impl TryFrom<&str> for Method {
     type Error = Error;
     fn try_from(value: &str) -> Result<Self, Self::Error> {
-        match value.to_uppercase().as_str() {
-            "GET" => Ok(Self::GET),
-            "HEAD" => Ok(Self::HEAD),
-            "POST" => Ok(Self::POST),
-            "PATCH" => Ok(Self::PATCH),
-            "PUT" => Ok(Self::PUT),
-            "DELETE" => Ok(Self::DELETE),
-            "OPTIONS" => Ok(Self::OPTIONS),
-            _ => Err(Error::MethodNotAllowed),
-        }
+        Self::ALL
+            .into_iter()
+            .find(|method| method.as_str().eq_ignore_ascii_case(value))
+            .ok_or(Error::MethodNotAllowed)
     }
 }
 

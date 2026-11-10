@@ -20,9 +20,11 @@
 //! # }
 //! ```
 
-pub mod logger;
 pub mod middleware;
+mod middlewares;
 pub mod router;
+mod routes;
 
-pub use logger::Logger;
 pub use middleware::{Middleware, Next};
+pub use middlewares::logger::{self, Logger};
+pub use router::{Router, RouterConfig};

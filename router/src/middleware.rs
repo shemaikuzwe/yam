@@ -18,29 +18,33 @@ pub enum Scope {
 }
 
 impl Scope {
-    fn applies(self, matched: bool) -> bool {
+    fn applies(self, matched: bool, path: &str) -> bool {
         match self {
             Scope::Global => true,
-            Scope::Router | Scope::Path(_) => matched,
+            Scope::Router => matched,
+            Scope::Path(prefix) => {
+                matched
+                    && path
+                        .strip_prefix(prefix)
+                        .is_some_and(|rest| rest.is_empty() || rest.starts_with('/'))
+            }
         }
     }
 }
 
+pub(crate) type Middlewares = Arc<Vec<(Arc<dyn Middleware>, Scope)>>;
+
 pub struct Next {
-    middlewares: Arc<Vec<(Arc<dyn Middleware>, Scope)>>,
+    middlewares: Middlewares,
     handler: Arc<dyn Handler>,
     index: usize,
     matched: bool,
 }
 
 impl Next {
-    pub fn new(
-        middlewares: Vec<(Arc<dyn Middleware>, Scope)>,
-        handler: Arc<dyn Handler>,
-        matched: bool,
-    ) -> Self {
+    pub(crate) fn new(middlewares: Middlewares, handler: Arc<dyn Handler>, matched: bool) -> Self {
         Self {
-            middlewares: Arc::new(middlewares),
+            middlewares,
             handler,
             index: 0,
             matched,
@@ -49,7 +53,7 @@ impl Next {
     pub fn run(self, req: Request) -> HandlerFuture {
         let skipped = self.middlewares[self.index..]
             .iter()
-            .position(|(_, scope)| scope.applies(self.matched));
+            .position(|(_, scope)| scope.applies(self.matched, req.path()));
         let Some(skipped) = skipped else {
             return self.handler.call(req);
         };
