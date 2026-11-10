@@ -28,4 +28,6 @@ pub enum Error {
     Utf8(#[from] Utf8Error),
     #[error("request timed out")]
     Timeout,
+    #[error("connection pool error: {0}")]
+    Pool(String),
 }

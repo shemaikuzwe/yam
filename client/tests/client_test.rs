@@ -455,3 +455,42 @@ async fn should_decompress_stacked_content_encodings() {
     );
     assert_eq!(response.header("content-encoding"), None);
 }
+
+#[tokio::test]
+async fn should_reuse_connection() {
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("listener should bind");
+    let address = listener.local_addr().expect("listener should have address");
+    // Accepts a single connection, so a second connect would make the client time out.
+    let server = tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.expect("server should accept");
+        for _ in 0..2 {
+            let mut request = [0; 1024];
+            let read = stream
+                .read(&mut request)
+                .await
+                .expect("server should read request");
+            assert!(read > 0);
+            stream
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok")
+                .await
+                .expect("server should write response");
+        }
+    });
+    let client = HttpClient::new(HttpClientConfig {
+        base_url: Some(format!("http://{address}")),
+        timeout: Some(Duration::from_secs(1)),
+        ..Default::default()
+    });
+
+    for _ in 0..2 {
+        let response = client
+            .get("/", RequestOptions::default())
+            .await
+            .expect("request should succeed");
+        assert_eq!(response.text().expect("response should be UTF-8"), "ok");
+    }
+
+    server.await.expect("server task should finish");
+}

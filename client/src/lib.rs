@@ -22,6 +22,7 @@
 mod client;
 mod compression;
 mod error;
+mod pool;
 mod request;
 mod response;
 mod transport;

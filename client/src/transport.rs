@@ -1,50 +1,36 @@
 use std::sync::Arc;
 
 use futures::StreamExt;
-use tokio::{
-    io::{AsyncRead, AsyncWrite, AsyncWriteExt},
-    net::TcpStream,
-};
-use tokio_rustls::{
-    TlsConnector,
-    rustls::{ClientConfig, pki_types::ServerName},
-};
+use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt};
+use tokio_rustls::rustls::ClientConfig;
 use url::Url;
 use yam_shared::chunked::encode_chunk;
 
-use crate::{error::Error, request::ChunkStream, response::Response};
+use crate::{
+    error::Error,
+    pool::{Pools, Stream},
+    request::ChunkStream,
+    response::Response,
+};
 
-/// Opens a connection for `url`, writes the request, and reads the response.
 pub(crate) async fn send(
+    pools: &Pools,
     url: &Url,
     tls_configuration: &Arc<ClientConfig>,
     request_head: &[u8],
     body: Vec<u8>,
     chunks: Option<ChunkStream>,
 ) -> Result<Response, Error> {
-    let host = url
-        .host_str()
-        .ok_or_else(|| Error::InvalidHostname(url.to_string()))?;
-    let port = url
-        .port_or_known_default()
-        .ok_or_else(|| Error::MissingPort(url.to_string()))?;
+    let mut conn = pools.get(url, tls_configuration).await?;
 
-    match url.scheme() {
-        "http" => {
-            let mut stream = TcpStream::connect((host, port)).await?;
-            write_and_read(&mut stream, request_head, body, chunks).await
-        }
-        "https" => {
-            let server_name = ServerName::try_from(host.to_owned())
-                .map_err(|_| Error::InvalidHostname(host.into()))?;
-            let connector = TlsConnector::from(Arc::clone(tls_configuration));
-            let mut stream = connector
-                .connect(server_name, TcpStream::connect((host, port)).await?)
-                .await?;
-            write_and_read(&mut stream, request_head, body, chunks).await
-        }
-        scheme => Err(Error::UnsupportedScheme(scheme.into())),
-    }
+    // Marked reusable again only after a clean keep-alive response.
+    conn.reusable = false;
+    let (response, keep_alive) = match &mut conn.stream {
+        Stream::Plain(stream) => write_and_read(stream, request_head, body, chunks).await?,
+        Stream::Tls(stream) => write_and_read(stream, request_head, body, chunks).await?,
+    };
+    conn.reusable = keep_alive;
+    Ok(response)
 }
 
 async fn write_and_read<S>(
@@ -52,7 +38,7 @@ async fn write_and_read<S>(
     request_head: &[u8],
     body: Vec<u8>,
     chunks: Option<ChunkStream>,
-) -> Result<Response, Error>
+) -> Result<(Response, bool), Error>
 where
     S: AsyncRead + AsyncWrite + Unpin,
 {

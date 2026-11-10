@@ -77,8 +77,7 @@ impl Response {
 }
 
 impl Response {
-    /// Reads a complete HTTP/1.1 response from `stream`.
-    pub(crate) async fn read<S>(stream: &mut S) -> Result<Response, Error>
+    pub(crate) async fn read<S>(stream: &mut S) -> Result<(Response, bool), Error>
     where
         S: AsyncRead + Unpin,
     {
@@ -98,6 +97,9 @@ impl Response {
         };
 
         let (status, mut headers) = parse_head(&buffer[..idx])?;
+        let mut keep_alive = !headers
+            .iter()
+            .any(|(name, value)| name == "connection" && value.eq_ignore_ascii_case("close"));
         let mut body = buffer[idx + SEPARATOR.len()..].to_vec();
 
         if has_body(status) {
@@ -123,6 +125,7 @@ impl Response {
                     }
                     None => {
                         stream.read_to_end(&mut body).await?;
+                        keep_alive = false;
                     }
                 }
             }
@@ -132,11 +135,14 @@ impl Response {
 
         let body = compression::decode(&mut headers, body)?;
 
-        Ok(Response {
-            status,
-            headers,
-            body,
-        })
+        Ok((
+            Response {
+                status,
+                headers,
+                body,
+            },
+            keep_alive,
+        ))
     }
 }
 

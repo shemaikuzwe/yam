@@ -6,6 +6,7 @@ use yam_shared::Headers;
 
 use crate::{
     error::Error,
+    pool::Pools,
     request::{Body, Method, RequestOptions},
     response::Response,
     transport,
@@ -17,6 +18,7 @@ pub struct HttpClient {
     timeout: Option<Duration>,
     tls_configuration: Arc<ClientConfig>,
     headers: Headers,
+    pools: Pools,
 }
 
 impl Default for HttpClient {
@@ -79,6 +81,7 @@ impl HttpClient {
             timeout: config.timeout,
             tls_configuration: Arc::new(tls_configuration),
             headers,
+            pools: Pools::default(),
         }
     }
     route_verb!(
@@ -243,6 +246,7 @@ let response = client
         request_head.push_str("\r\n");
 
         transport::send(
+            &self.pools,
             &url,
             &self.tls_configuration,
             request_head.as_bytes(),
