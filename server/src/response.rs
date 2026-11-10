@@ -203,11 +203,20 @@ impl<T: Serialize> IntoResponse for Json<T> {
 #[derive(Debug)]
 pub struct ResponseWriter<W: AsyncWrite> {
     writer: W,
+    head_only: bool,
 }
 
 impl<W: AsyncWrite + Unpin> ResponseWriter<W> {
     pub fn new(writer: W) -> Self {
-        Self { writer }
+        Self {
+            writer,
+            head_only: false,
+        }
+    }
+    /// Writes the status line and headers but no body, as required for HEAD requests.
+    pub fn head_only(mut self, head_only: bool) -> Self {
+        self.head_only = head_only;
+        self
     }
     async fn write_status_line(&mut self, status: StatusCode) -> io::Result<()> {
         let (code, reason) = match status {
@@ -257,7 +266,9 @@ impl<W: AsyncWrite + Unpin> ResponseWriter<W> {
                 .await?;
         }
         this.writer.write_all(b"\r\n").await?;
-        this.writer.write_all(&response.body).await?;
+        if !this.head_only {
+            this.writer.write_all(&response.body).await?;
+        }
         this.writer.flush().await?;
         Ok(())
     }

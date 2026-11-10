@@ -175,11 +175,20 @@ impl Router {
     fn add_route<H: Handler>(&mut self, method: Method, path: &str, handler: H) {
         let path = format!("{}{path}", self.route_prefix);
         let path = self.normalize_path(&path);
-        self.routes
-            .entry(method)
-            .or_default()
-            .insert(path, Arc::new(handler))
-            .unwrap_or_else(|err| panic!("Failed to register route: {err}"))
+        let handler: Arc<dyn Handler> = Arc::new(handler);
+        // A GET route also answers HEAD; the server drops the body.
+        let methods = if method == Method::GET {
+            vec![Method::GET, Method::HEAD]
+        } else {
+            vec![method]
+        };
+        for method in methods {
+            self.routes
+                .entry(method)
+                .or_default()
+                .insert(path, Arc::clone(&handler))
+                .unwrap_or_else(|err| panic!("Failed to register route: {err}"));
+        }
     }
     /// Serves router on an already-bound TCP listener.
     ///
@@ -206,6 +215,31 @@ impl Router {
             path.trim_end_matches("/")
         }
     }
+
+    /// Methods registered for `path` as an `Allow` header value; empty when the path is unknown.
+    fn allowed_methods(&self, path: &str) -> String {
+        let mut allow = [
+            (Method::GET, "GET"),
+            (Method::HEAD, "HEAD"),
+            (Method::POST, "POST"),
+            (Method::PATCH, "PATCH"),
+            (Method::PUT, "PUT"),
+            (Method::DELETE, "DELETE"),
+        ]
+        .into_iter()
+        .filter(|(method, _)| {
+            self.routes
+                .get(method)
+                .is_some_and(|routes| routes.at(path).is_ok())
+        })
+        .map(|(_, method)| method)
+        .collect::<Vec<_>>();
+        // Every known path answers OPTIONS automatically.
+        if !allow.is_empty() {
+            allow.push("OPTIONS");
+        }
+        allow.join(", ")
+    }
 }
 
 impl Handler for Router {
@@ -231,40 +265,27 @@ impl Handler for Router {
                 (handler, params, true)
             }
             None => {
-                let allow = [
-                    (Method::GET, "GET"),
-                    (Method::POST, "POST"),
-                    (Method::PATCH, "PATCH"),
-                    (Method::PUT, "PUT"),
-                    (Method::DELETE, "DELETE"),
-                ]
-                .into_iter()
-                .filter(|(method, _)| {
-                    self.routes
-                        .get(method)
-                        .is_some_and(|routes| routes.at(path).is_ok())
-                })
-                .map(|(_, method)| method)
-                .collect::<Vec<_>>()
-                .join(", ");
-                let (status, message) = if allow.is_empty() {
-                    (StatusCode::NotFound, "Not Found")
-                } else {
-                    (StatusCode::MethodNotAllowed, "Method not allowed")
+                let allow = self.allowed_methods(path);
+                let is_options = req.method().eq_ignore_ascii_case("OPTIONS");
+                let (status, message) = match (allow.is_empty(), is_options) {
+                    (true, _) => (StatusCode::NotFound, "Not Found"),
+                    (false, true) => (StatusCode::NoContent, ""),
+                    (false, false) => (StatusCode::MethodNotAllowed, "Method not allowed"),
                 };
                 let handler: Arc<dyn Handler> = Arc::new(move |_req: Request| {
                     let allow = allow.clone();
                     async move {
                         let response = Response::new().status(status);
-                        let response = if status == StatusCode::MethodNotAllowed {
-                            response.set("allow", &allow)
-                        } else {
+                        let response = if status == StatusCode::NotFound {
                             response
+                        } else {
+                            response.set("allow", &allow)
                         };
                         response.send(message)
                     }
                 });
-                (handler, HashMap::new(), false)
+                // An automatic OPTIONS answer is for a known path, so route middleware (e.g. CORS) runs.
+                (handler, HashMap::new(), status == StatusCode::NoContent)
             }
         };
         req.set_params(params);
@@ -345,6 +366,68 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn should_answer_head_with_get_handler() {
+        let mut router = Router::new(RouterConfig::default());
+        router.get("/users", |_| async { "users" });
+
+        let response = router
+            .call(request("HEAD", "/users"))
+            .await
+            .expect("handler should succeed");
+
+        assert_eq!(response.status, StatusCode::Ok);
+    }
+
+    #[tokio::test]
+    async fn should_answer_options_with_allowed_methods() {
+        let mut router = Router::new(RouterConfig::default());
+        router.get("/users", |_| async { "users" });
+        router.post("/users", |_| async { "created" });
+
+        let response = router
+            .call(request("OPTIONS", "/users"))
+            .await
+            .expect("router should return a response");
+
+        assert_eq!(response.status, StatusCode::NoContent);
+        assert_eq!(
+            response.headers.get("allow"),
+            Some("GET, HEAD, POST, OPTIONS")
+        );
+    }
+
+    #[tokio::test]
+    async fn should_return_not_found_for_options_on_unknown_path() {
+        let router = Router::new(RouterConfig::default());
+
+        let response = router
+            .call(request("OPTIONS", "/missing"))
+            .await
+            .expect("router should return a response");
+
+        assert_eq!(response.status, StatusCode::NotFound);
+    }
+
+    #[tokio::test]
+    async fn should_run_router_middleware_for_options() {
+        let ran = Arc::new(AtomicBool::new(false));
+        let mut router = Router::new(RouterConfig::default());
+        let ran_in_middleware = Arc::clone(&ran);
+        router.middleware(move |request: Request, next: Next| {
+            ran_in_middleware.store(true, Ordering::SeqCst);
+            next.run(request)
+        });
+        router.get("/users", |_| async { "users" });
+
+        router
+            .call(request("OPTIONS", "/users"))
+            .await
+            .expect("router should return a response");
+
+        assert!(ran.load(Ordering::SeqCst));
+    }
+
+    #[tokio::test]
     async fn should_return_not_found_for_unknown_path() {
         let router = Router::new(RouterConfig::default());
 
@@ -368,7 +451,10 @@ mod tests {
             .expect("router should return a response");
 
         assert_eq!(response.status, StatusCode::MethodNotAllowed);
-        assert_eq!(response.headers.get("allow"), Some("GET, POST"));
+        assert_eq!(
+            response.headers.get("allow"),
+            Some("GET, HEAD, POST, OPTIONS")
+        );
     }
 
     #[tokio::test]

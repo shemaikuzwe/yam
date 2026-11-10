@@ -76,6 +76,6 @@ async fn should_return_method_not_allowed_response() {
     server.abort();
 
     assert!(response.starts_with("HTTP/1.1 405 Method Not Allowed\r\n"));
-    assert!(response.contains("allow: GET, POST\r\n"));
+    assert!(response.contains("allow: GET, HEAD, POST, OPTIONS\r\n"));
     assert!(response.ends_with("\r\n\r\nMethod not allowed"));
 }

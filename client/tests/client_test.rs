@@ -284,6 +284,45 @@ async fn should_decode_chunked_response() {
     );
 }
 
+#[tokio::test]
+async fn should_not_read_body_for_head_response() {
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("listener should bind");
+    let address = listener.local_addr().expect("listener should have address");
+    let server = tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.expect("server should accept");
+        let mut request = [0; 1024];
+        let read = stream
+            .read(&mut request)
+            .await
+            .expect("server should read request");
+        assert!(request[..read].starts_with(b"HEAD /file HTTP/1.1\r\n"));
+        stream
+            .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\n")
+            .await
+            .expect("server should write response");
+        // Keep the connection open so a client waiting for a body would time out.
+        let _ = stream.read(&mut request).await;
+    });
+    let client = HttpClient::new(HttpClientConfig {
+        base_url: Some(format!("http://{address}")),
+        timeout: Some(Duration::from_secs(1)),
+        ..Default::default()
+    });
+
+    let response = client
+        .head("/file", RequestOptions::default())
+        .await
+        .expect("request should succeed");
+
+    assert_eq!(response.status, 200);
+    assert_eq!(response.header("content-length"), Some("5"));
+    assert!(response.bytes().is_empty());
+    drop(client);
+    server.await.expect("server task should finish");
+}
+
 fn gzip(bytes: &[u8]) -> Vec<u8> {
     use std::io::Write;
     let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());

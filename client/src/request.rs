@@ -9,20 +9,24 @@ pub(crate) type ChunkStream = BoxStream<'static, io::Result<Vec<u8>>>;
 #[derive(Debug, Clone, Copy, Hash, Eq, PartialEq)]
 pub enum Method {
     GET,
+    HEAD,
     POST,
     PATCH,
     PUT,
     DELETE,
+    OPTIONS,
 }
 
 impl Method {
     pub(crate) fn as_str(self) -> &'static str {
         match self {
             Self::GET => "GET",
+            Self::HEAD => "HEAD",
             Self::POST => "POST",
             Self::PATCH => "PATCH",
             Self::PUT => "PUT",
             Self::DELETE => "DELETE",
+            Self::OPTIONS => "OPTIONS",
         }
     }
 }

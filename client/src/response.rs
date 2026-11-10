@@ -2,7 +2,7 @@ use serde::de::DeserializeOwned;
 use tokio::io::{AsyncRead, AsyncReadExt};
 use yam_shared::chunked::parse_chunked_body;
 
-use crate::{compression, error::Error};
+use crate::{compression, error::Error, request::Method};
 
 const SEPARATOR: &[u8] = b"\r\n\r\n";
 
@@ -77,7 +77,7 @@ impl Response {
 }
 
 impl Response {
-    pub(crate) async fn read<S>(stream: &mut S) -> Result<(Response, bool), Error>
+    pub(crate) async fn read<S>(stream: &mut S, method: Method) -> Result<(Response, bool), Error>
     where
         S: AsyncRead + Unpin,
     {
@@ -102,7 +102,7 @@ impl Response {
             .any(|(name, value)| name == "connection" && value.eq_ignore_ascii_case("close"));
         let mut body = buffer[idx + SEPARATOR.len()..].to_vec();
 
-        if has_body(status) {
+        if has_body(method, status) {
             if is_chunked(&headers) {
                 body = read_chunked(stream, body).await?;
             } else {
@@ -146,9 +146,9 @@ impl Response {
     }
 }
 
-/// Informational, no content, and not modified responses never carry a body.
-fn has_body(status: u16) -> bool {
-    !(matches!(status, 204 | 304) || (100..200).contains(&status))
+/// HEAD, informational, no content, and not modified responses never carry a body.
+fn has_body(method: Method, status: u16) -> bool {
+    !(method == Method::HEAD || matches!(status, 204 | 304) || (100..200).contains(&status))
 }
 
 fn is_chunked(headers: &[(String, String)]) -> bool {

@@ -28,6 +28,22 @@ async fn should_send_plain_text_response() {
 }
 
 #[tokio::test]
+async fn should_send_head_response_without_body() {
+    let mut output = Vec::new();
+
+    ResponseWriter::new(&mut output)
+        .head_only(true)
+        .send_response(Response::new().send("Hello"))
+        .await
+        .expect("res should be sent successfully.");
+
+    let response = String::from_utf8(output).expect("response should be converted to string");
+
+    assert!(response.contains("content-length: 5\r\n"));
+    assert!(response.ends_with("\r\n\r\n"));
+}
+
+#[tokio::test]
 async fn should_send_json_response() {
     let mut output = Vec::new();
     let user = User {

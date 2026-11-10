@@ -9,7 +9,7 @@ use yam_shared::chunked::encode_chunk;
 use crate::{
     error::Error,
     pool::{Pools, Stream},
-    request::ChunkStream,
+    request::{ChunkStream, Method},
     response::Response,
 };
 
@@ -17,6 +17,7 @@ pub(crate) async fn send(
     pools: &Pools,
     url: &Url,
     tls_configuration: &Arc<ClientConfig>,
+    method: Method,
     request_head: &[u8],
     body: Vec<u8>,
     chunks: Option<ChunkStream>,
@@ -26,8 +27,8 @@ pub(crate) async fn send(
     // Marked reusable again only after a clean keep-alive response.
     conn.reusable = false;
     let (response, keep_alive) = match &mut conn.stream {
-        Stream::Plain(stream) => write_and_read(stream, request_head, body, chunks).await?,
-        Stream::Tls(stream) => write_and_read(stream, request_head, body, chunks).await?,
+        Stream::Plain(stream) => write_and_read(stream, method, request_head, body, chunks).await?,
+        Stream::Tls(stream) => write_and_read(stream, method, request_head, body, chunks).await?,
     };
     conn.reusable = keep_alive;
     Ok(response)
@@ -35,6 +36,7 @@ pub(crate) async fn send(
 
 async fn write_and_read<S>(
     stream: &mut S,
+    method: Method,
     request_head: &[u8],
     body: Vec<u8>,
     chunks: Option<ChunkStream>,
@@ -57,5 +59,5 @@ where
     }
     stream.flush().await?;
 
-    Response::read(stream).await
+    Response::read(stream, method).await
 }

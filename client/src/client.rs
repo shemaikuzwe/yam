@@ -102,6 +102,23 @@ let response = client
         get => GET
     );
     route_verb!(
+        #[doc = r#"Sends a HEAD request. The response has headers but an empty body.
+
+```no_run
+use yam_client::{Error, HttpClient, RequestOptions};
+
+# async fn run() -> Result<(), Error> {
+let client = HttpClient::default();
+let response = client
+    .head("https://example.com/files/report.pdf", RequestOptions::default())
+    .await?;
+# let _ = response;
+# Ok(())
+# }
+```"#]
+        head => HEAD
+    );
+    route_verb!(
         #[doc = r#"Sends a POST request.
 
 ```no_run
@@ -178,6 +195,23 @@ let response = client
 ```"#]
         delete => DELETE
     );
+    route_verb!(
+        #[doc = r#"Sends an OPTIONS request. The `allow` header lists the methods the path supports.
+
+```no_run
+use yam_client::{Error, HttpClient, RequestOptions};
+
+# async fn run() -> Result<(), Error> {
+let client = HttpClient::default();
+let response = client
+    .options("https://example.com/users", RequestOptions::default())
+    .await?;
+# let _ = response.header("allow");
+# Ok(())
+# }
+```"#]
+        options => OPTIONS
+    );
 
     async fn request(
         &self,
@@ -249,6 +283,7 @@ let response = client
             &self.pools,
             &url,
             &self.tls_configuration,
+            method,
             request_head.as_bytes(),
             body,
             chunks,

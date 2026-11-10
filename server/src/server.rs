@@ -65,6 +65,7 @@ pub async fn handle_request(stream: TcpStream, handler: Arc<dyn Handler>) -> Res
         };
 
         let connection_type = get_connection_type(&request);
+        let is_head = request.method().eq_ignore_ascii_case("HEAD");
 
         let mut response = match handler.call(request).await {
             Ok(response) => response,
@@ -74,6 +75,7 @@ pub async fn handle_request(stream: TcpStream, handler: Arc<dyn Handler>) -> Res
             .headers
             .set("connection", connection_type.to_string());
         ResponseWriter::new(&mut write_stream)
+            .head_only(is_head)
             .send_response(response)
             .await?;
 
