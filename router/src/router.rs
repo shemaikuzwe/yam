@@ -7,7 +7,7 @@ use yam_server::{
 };
 
 use crate::{
-    middleware::{Middleware, Middlewares, Next},
+    middleware::{Middleware, Middlewares, Next, Scope},
     routes::{Lookup, Routes},
 };
 
@@ -168,6 +168,29 @@ impl Router {
         M: Middleware,
     {
         let scope = middleware.scope();
+        Arc::make_mut(&mut self.middlewares).push((Arc::new(middleware), scope));
+        self
+    }
+    /// Appends middleware that only wraps matched routes under `path`.
+    ///
+    /// `path` is relative to the router's `route_prefix`, and matches whole
+    /// segments: `/admin` covers `/admin` and `/admin/users`, not `/administrator`.
+    ///
+    /// ```
+    /// use yam_router::{Next, router::Router};
+    /// use yam_server::Request;
+    ///
+    /// let mut app = Router::new(Default::default());
+    /// app.middleware_at("/admin", async |request: Request, next: Next| {
+    ///     // Check credentials here.
+    ///     next.run(request).await
+    /// });
+    /// ```
+    pub fn middleware_at<M>(&mut self, path: &str, middleware: M) -> &mut Self
+    where
+        M: Middleware,
+    {
+        let scope = Scope::Path(format!("{}{path}", self.route_prefix));
         Arc::make_mut(&mut self.middlewares).push((Arc::new(middleware), scope));
         self
     }

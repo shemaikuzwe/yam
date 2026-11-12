@@ -10,15 +10,15 @@ pub trait Middleware: Send + Sync + 'static {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Scope {
     Global,
     Router,
-    Path(&'static str),
+    Path(String),
 }
 
 impl Scope {
-    fn applies(self, matched: bool, path: &str) -> bool {
+    fn applies(&self, matched: bool, path: &str) -> bool {
         match self {
             Scope::Global => true,
             Scope::Router => matched,

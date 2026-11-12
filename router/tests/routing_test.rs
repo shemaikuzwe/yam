@@ -403,7 +403,7 @@ async fn should_run_path_middleware_only_under_its_prefix() {
             next.run(req)
         }
         fn scope(&self) -> Scope {
-            Scope::Path("/admin")
+            Scope::Path("/admin".into())
         }
     }
 
@@ -424,4 +424,30 @@ async fn should_run_path_middleware_only_under_its_prefix() {
     }
 
     assert_eq!(*seen.lock().unwrap(), ["/admin", "/admin/users"]);
+}
+
+#[tokio::test]
+async fn should_scope_middleware_at_path_under_route_prefix() {
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let mut router = Router::new(RouterConfig {
+        route_prefix: "/v1".into(),
+        ..Default::default()
+    });
+    let log = Arc::clone(&seen);
+    router.middleware_at("/admin", move |req: Request, next: Next| {
+        log.lock().unwrap().push(req.path().to_string());
+        next.run(req)
+    });
+    for path in ["/admin/users", "/users"] {
+        router.get(path, |_| async { "ok" });
+    }
+
+    for path in ["/v1/admin/users", "/v1/users"] {
+        router
+            .call(request("GET", path))
+            .await
+            .expect("handler should succeed");
+    }
+
+    assert_eq!(*seen.lock().unwrap(), ["/v1/admin/users"]);
 }

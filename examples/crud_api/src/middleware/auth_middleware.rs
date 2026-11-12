@@ -6,12 +6,6 @@ use yam_http::{
 use crate::{auth::auth_service::verify_jwt, shared::AppError};
 
 pub async fn auth_middleware(mut req: Request, next: Next) -> Result<Response, HttpError> {
-    let req_path = req.path();
-
-    if req_path.contains("/auth") || req_path.contains("/health") {
-        return next.run(req).await;
-    }
-
     let Some(token) = get_token(&req) else {
         return Ok(AppError::UnAuthorized.into_response());
     };

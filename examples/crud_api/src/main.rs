@@ -24,7 +24,7 @@ async fn main() {
         .put("/admin/users/{id}", admin_controller::update_user)
         .delete("/admin/users/{id}", admin_controller::delete_user)
         .middleware(Logger::default())
-        .middleware(auth_middleware);
+        .middleware_at("/admin", auth_middleware);
     let port = config().port;
     let listener = tokio::net::TcpListener::bind(format!("localhost:{port}"))
         .await
