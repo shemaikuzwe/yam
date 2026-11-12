@@ -132,6 +132,24 @@ impl Response {
         self.headers.append("set-cookie", cookie.to_string());
         self
     }
+    /// Creates a `302 Found` redirect to `location`.
+    /// Use `.status(...)` to change it, e.g. `StatusCode::SeeOther` after a POST.
+    ///
+    /// ```
+    /// use yam_server::{Response, StatusCode};
+    /// let response = Response::redirect("/login");
+    /// assert_eq!(response.status, StatusCode::Found);
+    /// assert_eq!(response.headers.get("location"), Some("/login"));
+    ///
+    /// // after a form POST
+    /// let response = Response::redirect("/users/1").status(StatusCode::SeeOther);
+    /// assert_eq!(response.status, StatusCode::SeeOther);
+    /// ```
+    pub fn redirect(location: &str) -> Self {
+        Response::new()
+            .status(StatusCode::Found)
+            .set("location", location)
+    }
 }
 
 pub trait IntoResponse {
@@ -353,12 +371,8 @@ impl HttpError {
     pub fn status(&self) -> StatusCode {
         match self {
             HttpError::Io(_) => StatusCode::InternalServerError,
-            HttpError::Request(request::Error::RequestTooLarge) => {
-                StatusCode::ContentTooLarge
-            }
-            HttpError::Request(request::Error::MethodNotAllowed) => {
-                StatusCode::NotImplemented
-            }
+            HttpError::Request(request::Error::RequestTooLarge) => StatusCode::ContentTooLarge,
+            HttpError::Request(request::Error::MethodNotAllowed) => StatusCode::NotImplemented,
             HttpError::Request(request::Error::Parse(
                 request::ParseError::UnsupportedHttpVersion,
             )) => StatusCode::HttpVersionNotSupported,

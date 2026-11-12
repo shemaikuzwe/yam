@@ -131,3 +131,18 @@ fn should_map_specific_request_errors_to_statuses() {
         assert_eq!(HttpError::Request(error).status(), expected_status);
     }
 }
+
+#[tokio::test]
+async fn should_send_redirect_response() {
+    let mut output = Vec::new();
+    let response = Response::redirect("/users/1").status(StatusCode::SeeOther);
+    ResponseWriter::new(&mut output)
+        .send_response(response)
+        .await
+        .expect("res should be sent successfully.");
+
+    let response = String::from_utf8(output).expect("response should be converted to string");
+
+    assert!(response.starts_with("HTTP/1.1 303 See Other\r\n"));
+    assert!(response.contains("location: /users/1\r\n"));
+}
