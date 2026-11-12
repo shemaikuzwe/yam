@@ -26,5 +26,6 @@ pub mod router;
 mod routes;
 
 pub use middleware::{Middleware, Next};
+pub use middlewares::cors::{self, Cors};
 pub use middlewares::logger::{self, Logger};
 pub use router::{Router, RouterConfig};
