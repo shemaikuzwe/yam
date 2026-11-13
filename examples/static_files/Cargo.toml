@@ -1,0 +1,13 @@
+[workspace]
+
+[package]
+name = "static_files"
+version = "0.1.0"
+edition = "2024"
+description = "Serve html, css and js with yam-http"
+
+[dependencies]
+yam-http = { path = "../.." }
+tokio = { version = "1.52.3", features = ["full"] }
+serde_json = "1.0"
+tracing-subscriber = "0.3.23"

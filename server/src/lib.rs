@@ -25,5 +25,7 @@ pub use request::{
     get_connection_type, ConnectionType, Error, Extensions, Method, ParamError, ParseError,
     Request, RequestLine, RequestReader,
 };
-pub use response::{HttpError, IntoResponse, Json, Response, ResponseWriter, StatusCode};
+pub use response::{
+    Body, BodyStream, HttpError, IntoResponse, Json, Response, ResponseWriter, StatusCode,
+};
 pub use server::{Handler, HandlerFuture, Server};

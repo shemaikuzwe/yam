@@ -24,6 +24,7 @@ pub mod middleware;
 mod middlewares;
 pub mod router;
 mod routes;
+mod static_files;
 
 pub use middleware::{Middleware, Next};
 pub use middlewares::cors::{self, Cors};

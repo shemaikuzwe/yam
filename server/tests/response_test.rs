@@ -105,7 +105,7 @@ async fn should_convert_http_error_to_response() {
     let response = HttpError::Json(err).into_response();
 
     assert_eq!(response.status, StatusCode::BadRequest);
-    assert!(!response.body.is_empty());
+    assert_ne!(response.body, b"");
 }
 
 #[test]

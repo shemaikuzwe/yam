@@ -1,7 +1,7 @@
 use std::{collections::HashSet, time::Instant};
 
 use tracing::Level;
-use yam_server::{HandlerFuture, Request};
+use yam_server::{Body, HandlerFuture, Request, Response};
 
 use crate::middleware::{Middleware, Next, Scope};
 
@@ -86,7 +86,7 @@ impl Middleware for Logger {
                     method = %method,
                     path = %path,
                     status = response.status as u16,
-                    size = response.body.len(),
+                    size = body_size(response),
                     handler_ms= handler_ms,
                     "request completed"
                 ),
@@ -102,6 +102,17 @@ impl Middleware for Logger {
 
             result
         })
+    }
+}
+
+fn body_size(response: &Response) -> usize {
+    match &response.body {
+        Body::Bytes(bytes) => bytes.len(),
+        Body::Stream(_) => response
+            .headers
+            .get("content-length")
+            .and_then(|len| len.parse().ok())
+            .unwrap_or(0),
     }
 }
 

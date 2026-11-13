@@ -1,4 +1,4 @@
-use std::io;
+use std::{fmt, io, pin::Pin};
 
 use crate::{
     headers::{Cookie, Headers},
@@ -42,12 +42,39 @@ pub enum StatusCode {
     HttpVersionNotSupported = 505,
 }
 
+pub type BodyStream = Pin<Box<dyn Stream<Item = io::Result<Vec<u8>>> + Send>>;
+
+/// A response body: buffered bytes, or a stream written as it is produced.
+pub enum Body {
+    Bytes(Vec<u8>),
+    Stream(BodyStream),
+}
+
+impl fmt::Debug for Body {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Body::Bytes(bytes) => f.debug_tuple("Bytes").field(bytes).finish(),
+            Body::Stream(_) => f.write_str("Stream(..)"),
+        }
+    }
+}
+
+/// Compares buffered bodies with bytes; a stream never equals bytes.
+impl<T> PartialEq<T> for Body
+where
+    Vec<u8>: PartialEq<T>,
+{
+    fn eq(&self, other: &T) -> bool {
+        matches!(self, Body::Bytes(bytes) if bytes == other)
+    }
+}
+
 #[derive(Debug)]
 /// An HTTP response returned by a handler.
 pub struct Response {
     pub status: StatusCode,
     pub headers: Headers,
-    pub body: Vec<u8>,
+    pub body: Body,
 }
 impl Default for Response {
     fn default() -> Self {
@@ -69,7 +96,7 @@ impl Response {
         Self {
             status: StatusCode::Ok,
             headers,
-            body: Vec::new(),
+            body: Body::Bytes(Vec::new()),
         }
     }
     /// Sets the response status.
@@ -102,7 +129,24 @@ impl Response {
     /// assert_eq!(response.body, b"Hello world");
     /// ```
     pub fn send(mut self, body: impl Into<Vec<u8>>) -> Self {
-        self.body = body.into();
+        self.body = Body::Bytes(body.into());
+        self
+    }
+    /// Sets a streamed body, written chunk by chunk without buffering it all.
+    ///
+    /// Uses `transfer-encoding: chunked` unless a `content-length` header is set.
+    ///
+    /// ```
+    /// use yam_server::Response;
+    /// let response = Response::new().stream_response(futures::stream::iter(["hello", " world"]));
+    /// assert_ne!(response.body, b"hello world");
+    /// ```
+    pub fn stream_response<S, T>(mut self, stream: S) -> Self
+    where
+        S: Stream<Item = T> + Send + 'static,
+        T: IntoChunk + 'static,
+    {
+        self.body = Body::Stream(Box::pin(stream.map(IntoChunk::into_chunk)));
         self
     }
     /// Serializes a value as JSON and sets the JSON content type.
@@ -272,77 +316,68 @@ impl<W: AsyncWrite + Unpin> ResponseWriter<W> {
             .await?;
         Ok(())
     }
-    pub async fn send_response(self, mut response: Response) -> Result<(), HttpError> {
-        let mut this = self;
-        response
-            .headers
-            .set("content-length", response.body.len().to_string());
-        this.write_status_line(response.status).await?;
-        for (k, v) in response.headers.iter() {
-            this.writer
-                .write_all(format!("{k}: {v}\r\n").as_bytes())
-                .await?;
-        }
-        this.writer.write_all(b"\r\n").await?;
-        if !this.head_only {
-            this.writer.write_all(&response.body).await?;
-        }
-        this.writer.flush().await?;
-        Ok(())
-    }
-    pub async fn send(self, body: impl AsRef<[u8]>) -> Result<(), HttpError> {
-        self.send_response(Response {
-            body: body.as_ref().to_vec(),
-            ..Response::new()
-        })
-        .await
-    }
-    pub async fn json(self, body: &impl Serialize) -> Result<(), HttpError> {
-        let response = Response::new().json(body);
-        self.send_response(response).await
-    }
-    pub async fn create_stream_response<S, T>(
-        mut self,
-        mut response: Response,
-        stream: S,
-    ) -> Result<(), HttpError>
-    where
-        S: Stream<Item = T> + Unpin,
-        T: IntoChunk,
-    {
-        response
-            .headers
-            .set("transfer-encoding", "chunked".to_string());
-        self.write_status_line(response.status).await?;
-        for (k, v) in response.headers.iter() {
+    pub async fn send_response(mut self, response: Response) -> Result<(), HttpError> {
+        let Response {
+            status,
+            mut headers,
+            body,
+        } = response;
+        let chunked = match &body {
+            Body::Bytes(bytes) => {
+                headers.set("content-length", bytes.len().to_string());
+                false
+            }
+            // A stream with a known size (e.g. a file) keeps its content-length.
+            Body::Stream(_) if headers.get("content-length").is_some() => false,
+            Body::Stream(_) => {
+                headers.set("transfer-encoding", "chunked".to_string());
+                true
+            }
+        };
+
+        self.write_status_line(status).await?;
+        for (k, v) in headers.iter() {
             self.writer
                 .write_all(format!("{k}: {v}\r\n").as_bytes())
                 .await?;
         }
         self.writer.write_all(b"\r\n").await?;
-        let mut stream = stream;
-        while let Some(chunk) = stream.next().await {
-            match chunk.into_chunk() {
-                Ok(chunk) if !chunk.is_empty() => {
-                    // Write: <size-in-hex>\r\n<data>\r\n
-                    self.writer
-                        .write_all(format!("{:x}\r\n", chunk.len()).as_bytes())
-                        .await?;
-                    self.writer.write_all(&chunk).await?;
-                    self.writer.write_all(b"\r\n").await?;
-                }
-                Ok(_) => {} // Skip empty chunks
-                Err(e) => {
-                    eprintln!("Stream error: {}", e);
-                    break;
-                }
+        if !self.head_only {
+            match body {
+                Body::Bytes(bytes) => self.writer.write_all(&bytes).await?,
+                Body::Stream(stream) => self.write_stream(stream, chunked).await?,
             }
         }
-
-        // Write terminating chunk: 0\r\n\r\n
-        self.writer.write_all(b"0\r\n\r\n").await?;
         self.writer.flush().await?;
         Ok(())
+    }
+    
+    async fn write_stream(&mut self, mut stream: BodyStream, chunked: bool) -> io::Result<()> {
+        while let Some(chunk) = stream.next().await {
+            let chunk = chunk?;
+            if !chunked {
+                self.writer.write_all(&chunk).await?;
+            } else if !chunk.is_empty() {
+                // Write: <size-in-hex>\r\n<data>\r\n
+                self.writer
+                    .write_all(format!("{:x}\r\n", chunk.len()).as_bytes())
+                    .await?;
+                self.writer.write_all(&chunk).await?;
+                self.writer.write_all(b"\r\n").await?;
+            }
+        }
+        if chunked {
+            self.writer.write_all(b"0\r\n\r\n").await?;
+        }
+        Ok(())
+    }
+    pub async fn send(self, body: impl AsRef<[u8]>) -> Result<(), HttpError> {
+        self.send_response(Response::new().send(body.as_ref()))
+            .await
+    }
+    pub async fn json(self, body: &impl Serialize) -> Result<(), HttpError> {
+        let response = Response::new().json(body);
+        self.send_response(response).await
     }
 }
 
@@ -429,10 +464,10 @@ mod tests {
     async fn should_send_chunked_stream_response() {
         let mut output = Vec::new();
         ResponseWriter::new(&mut output)
-            .create_stream_response(
-                Response::new(),
-                futures::stream::iter([b"hello".to_vec(), b" world".to_vec()]),
-            )
+            .send_response(Response::new().stream_response(futures::stream::iter([
+                b"hello".to_vec(),
+                b" world".to_vec(),
+            ])))
             .await
             .unwrap();
 
@@ -441,6 +476,49 @@ mod tests {
         assert!(output.contains("transfer-encoding: chunked\r\n"));
         assert!(!output.contains("content-length:"));
         assert!(output.ends_with("\r\n\r\n5\r\nhello\r\n6\r\n world\r\n0\r\n\r\n"));
+    }
+    #[tokio::test]
+    async fn should_send_stream_with_content_length_unchunked() {
+        let mut output = Vec::new();
+        ResponseWriter::new(&mut output)
+            .send_response(
+                Response::new()
+                    .set("content-length", "11")
+                    .stream_response(futures::stream::iter(["hello", " world"])),
+            )
+            .await
+            .unwrap();
+
+        let output = String::from_utf8(output).unwrap();
+
+        assert!(!output.contains("transfer-encoding"));
+        assert!(output.contains("content-length: 11\r\n"));
+        assert!(output.ends_with("\r\n\r\nhello world"));
+    }
+    #[tokio::test]
+    async fn should_abort_stream_on_error() {
+        let mut output = Vec::new();
+        let chunks: [io::Result<&str>; 2] = [Ok("hello"), Err(io::Error::other("disk"))];
+        let result = ResponseWriter::new(&mut output)
+            .send_response(Response::new().stream_response(futures::stream::iter(chunks)))
+            .await;
+
+        assert!(result.is_err());
+        assert!(!String::from_utf8(output).unwrap().ends_with("0\r\n\r\n"));
+    }
+    #[tokio::test]
+    async fn should_skip_stream_body_for_head() {
+        let mut output = Vec::new();
+        ResponseWriter::new(&mut output)
+            .head_only(true)
+            .send_response(Response::new().stream_response(futures::stream::iter(["hello"])))
+            .await
+            .unwrap();
+
+        let output = String::from_utf8(output).unwrap();
+        assert!(output.contains("transfer-encoding: chunked\r\n"));
+        assert!(output.ends_with("\r\n\r\n"));
+        assert!(!output.contains("hello"));
     }
 
     #[tokio::test]

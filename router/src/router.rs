@@ -1,4 +1,4 @@
-use std::{format, future::Future, io, sync::Arc};
+use std::{format, future::Future, io, path::PathBuf, sync::Arc};
 
 use tokio::net::TcpListener;
 use yam_server::{
@@ -9,6 +9,7 @@ use yam_server::{
 use crate::{
     middleware::{Middleware, Middlewares, Next, Scope},
     routes::{Lookup, Routes},
+    static_files,
 };
 
 pub struct Router {
@@ -192,6 +193,28 @@ impl Router {
     {
         let scope = Scope::Path(format!("{}{path}", self.route_prefix));
         Arc::make_mut(&mut self.middlewares).push((Arc::new(middleware), scope));
+        self
+    }
+    /// Serves files from `dir` under `path`, with `ETag`/`Last-Modified` caching.
+    ///
+    /// Unlike other routes, `path` ignores `route_prefix` so assets can live
+    /// outside the API prefix. Symlinks inside `dir` are followed.
+    ///
+    /// ```
+    /// use yam_router::router::Router;
+    ///
+    /// let mut app = Router::new(Default::default());
+    /// // GET /assets/css/app.css -> ./public/css/app.css
+    /// app.static_files("/assets", "./public");
+    /// ```
+    pub fn static_files(&mut self, path: &str, dir: impl Into<PathBuf>) -> &mut Self {
+        let root = Arc::new(dir.into());
+        let handler = move |req: Request| {
+            let root = Arc::clone(&root);
+            async move { static_files::serve(&root, req).await }
+        };
+        let path = format!("{}/{{*file}}", path.trim_end_matches('/'));
+        self.routes.insert(Method::GET, &path, Arc::new(handler));
         self
     }
     fn add_route<H: Handler>(&mut self, method: Method, path: &str, handler: H) {
