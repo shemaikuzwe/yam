@@ -18,6 +18,7 @@ async fn main() {
             { "id": 3, "name": "Carol", "email": "carol@example.com" },
         ])
     })
+    // correctly sets the relative file path
     .static_files("/", concat!(env!("CARGO_MANIFEST_DIR"), "/public"))
     .middleware(Logger::default());
     let listener = tokio::net::TcpListener::bind("localhost:3000")
