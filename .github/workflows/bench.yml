@@ -9,7 +9,11 @@ permissions:
   pull-requests: write
 
 jobs:
+  test:
+    uses: ./.github/workflows/test.yml
+
   bench:
+    needs: test
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
