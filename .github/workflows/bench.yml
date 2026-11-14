@@ -9,7 +9,11 @@ permissions:
   pull-requests: write
 
 jobs:
+  test:
+    uses: ./.github/workflows/test.yml
+
   bench:
+    needs: test
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -29,6 +33,7 @@ jobs:
       - run: ./bench/run.sh
         env:
           BASELINE_DIR: ${{ github.workspace }}/main
+      - run: ./bench/client.sh
 
       - run: cat bench/results.md >> "$GITHUB_STEP_SUMMARY"
 
