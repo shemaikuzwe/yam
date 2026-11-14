@@ -34,6 +34,8 @@ impl Server {
         let handler = Arc::new(handler);
         loop {
             let (stream, _addr) = listener.accept().await?;
+            // Disable Nagle so small responses aren't held back waiting on delayed ACKs.
+            let _ = stream.set_nodelay(true);
 
             let handler = Arc::clone(&handler);
 

@@ -2,20 +2,21 @@ use std::io;
 
 use futures::StreamExt;
 use serde::Serialize;
-use tokio::io::{AsyncWrite, AsyncWriteExt};
+use tokio::io::{AsyncWrite, AsyncWriteExt, BufWriter};
 
 use super::response::{Body, BodyStream, HttpError, Response, StatusCode};
 
 #[derive(Debug)]
 pub struct ResponseWriter<W: AsyncWrite> {
-    writer: W,
+    // Buffered so a response leaves in one write instead of one per line.
+    writer: BufWriter<W>,
     head_only: bool,
 }
 
 impl<W: AsyncWrite + Unpin> ResponseWriter<W> {
     pub fn new(writer: W) -> Self {
         Self {
-            writer,
+            writer: BufWriter::new(writer),
             head_only: false,
         }
     }
@@ -109,6 +110,8 @@ impl<W: AsyncWrite + Unpin> ResponseWriter<W> {
                 self.writer.write_all(&chunk).await?;
                 self.writer.write_all(b"\r\n").await?;
             }
+            // Push each chunk out as it arrives so streams aren't held in the buffer.
+            self.writer.flush().await?;
         }
         if chunked {
             self.writer.write_all(b"0\r\n\r\n").await?;
