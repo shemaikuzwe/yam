@@ -13,6 +13,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      # Baseline: yam from the branch this PR targets
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.base_ref || 'main' }}
+          path: main
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with:
@@ -22,6 +27,8 @@ jobs:
           tool: oha
 
       - run: ./bench/run.sh
+        env:
+          BASELINE_DIR: ${{ github.workspace }}/main
 
       - run: cat bench/results.md >> "$GITHUB_STEP_SUMMARY"
 
