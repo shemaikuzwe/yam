@@ -1,14 +1,20 @@
-use std::{future::Future, io, pin::Pin, sync::Arc, time::Duration};
+use std::{
+    future::Future,
+    io,
+    pin::{Pin, pin},
+    sync::Arc,
+    time::Duration,
+};
 
 use crate::{
     Error,
     request::{ConnectionType, DEFAULT_MAX_BODY_SIZE, Request, RequestReader, get_connection_type},
-    response::{HttpError, IntoResponse, Response, ResponseWriter},
+    response::{HttpError, IntoResponse, Response, write_response},
 };
 use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::watch;
-use tokio::time::timeout;
+use tokio::time::{Instant, sleep};
 
 pub struct Server;
 
@@ -121,29 +127,30 @@ pub async fn handle_request(
     let (read_stream, mut write_stream) = stream.into_split();
 
     let mut request_reader = RequestReader::new(read_stream).max_body_size(config.max_body_size);
+    // Reused for every response on this connection.
+    let mut write_buffer = Vec::with_capacity(512);
+    let mut idle = pin!(sleep(config.read_timeout));
     loop {
-        let read = timeout(
-            config.read_timeout,
-            read_request(&mut request_reader, &mut write_stream),
-        );
+        // Pushing a live timer's deadline back is far cheaper than arming a new one per request.
+        idle.as_mut().reset(Instant::now() + config.read_timeout);
         let request = tokio::select! {
-            read = read => read,
+            biased;
+            request = read_request(&mut request_reader, &mut write_stream) => request,
+            // Idle too long: close without an error response.
+            () = &mut idle => return Ok(()),
             _ = stopped.wait_for(|stopped| *stopped) => return Ok(()),
         };
         let mut request = match request {
-            Err(_elapsed) => return Ok(()), // Idle too long: close without an error response.
-            Ok(Err(Error::GracefulEof)) => return Ok(()),
-            Ok(Err(err)) => {
+            Err(Error::GracefulEof) => return Ok(()),
+            Err(err) => {
                 let mut response = HttpError::from(err).into_response();
                 response
                     .headers
                     .set("connection", ConnectionType::Close.to_string());
-                ResponseWriter::new(&mut write_stream)
-                    .send_response(response)
-                    .await?;
+                write_response(&mut write_stream, &mut write_buffer, response, false).await?;
                 return Ok(());
             }
-            Ok(Ok(request)) => request,
+            Ok(request) => request,
         };
         request.remote_addr = remote_addr;
 
@@ -160,10 +167,7 @@ pub async fn handle_request(
         response
             .headers
             .set("connection", connection_type.to_string());
-        ResponseWriter::new(&mut write_stream)
-            .head_only(is_head)
-            .send_response(response)
-            .await?;
+        write_response(&mut write_stream, &mut write_buffer, response, is_head).await?;
 
         if connection_type == ConnectionType::Close {
             return Ok(());

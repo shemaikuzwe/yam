@@ -1,22 +1,23 @@
-use std::io;
+use std::io::{self, Write as _};
 
 use futures::StreamExt;
 use serde::Serialize;
-use tokio::io::{AsyncWrite, AsyncWriteExt, BufWriter};
+use tokio::io::{AsyncWrite, AsyncWriteExt};
 
 use super::response::{Body, BodyStream, HttpError, Response, StatusCode};
 
+const INLINE_BODY_LIMIT: usize = 16 * 1024;
+
 #[derive(Debug)]
 pub struct ResponseWriter<W: AsyncWrite> {
-    // Buffered so a response leaves in one write instead of one per line.
-    writer: BufWriter<W>,
+    writer: W,
     head_only: bool,
 }
 
 impl<W: AsyncWrite + Unpin> ResponseWriter<W> {
     pub fn new(writer: W) -> Self {
         Self {
-            writer: BufWriter::new(writer),
+            writer,
             head_only: false,
         }
     }
@@ -25,98 +26,9 @@ impl<W: AsyncWrite + Unpin> ResponseWriter<W> {
         self.head_only = head_only;
         self
     }
-    async fn write_status_line(&mut self, status: StatusCode) -> io::Result<()> {
-        let (code, reason) = match status {
-            StatusCode::Ok => (200, "OK"),
-            StatusCode::Created => (201, "Created"),
-            StatusCode::Accepted => (202, "Accepted"),
-            StatusCode::NoContent => (204, "No Content"),
-            StatusCode::MovedPermanently => (301, "Moved Permanently"),
-            StatusCode::Found => (302, "Found"),
-            StatusCode::SeeOther => (303, "See Other"),
-            StatusCode::NotModified => (304, "Not Modified"),
-            StatusCode::TemporaryRedirect => (307, "Temporary Redirect"),
-            StatusCode::PermanentRedirect => (308, "Permanent Redirect"),
-            StatusCode::BadRequest => (400, "Bad Request"),
-            StatusCode::Unauthorized => (401, "Unauthorized"),
-            StatusCode::Forbidden => (403, "Forbidden"),
-            StatusCode::NotFound => (404, "Not Found"),
-            StatusCode::MethodNotAllowed => (405, "Method Not Allowed"),
-            StatusCode::NotAcceptable => (406, "Not Acceptable"),
-            StatusCode::RequestTimeout => (408, "Request Timeout"),
-            StatusCode::Conflict => (409, "Conflict"),
-            StatusCode::ContentTooLarge => (413, "Content Too Large"),
-            StatusCode::UnsupportedMediaType => (415, "Unsupported Media Type"),
-            StatusCode::UnprocessableContent => (422, "Unprocessable Content"),
-            StatusCode::TooManyRequests => (429, "Too Many Requests"),
-            StatusCode::InternalServerError => (500, "Internal Server Error"),
-            StatusCode::NotImplemented => (501, "Not Implemented"),
-            StatusCode::BadGateway => (502, "Bad Gateway"),
-            StatusCode::ServiceUnavailable => (503, "Service Unavailable"),
-            StatusCode::GatewayTimeout => (504, "Gateway Timeout"),
-            StatusCode::HttpVersionNotSupported => (505, "HTTP Version Not Supported"),
-        };
-        self.writer
-            .write_all(format!("HTTP/1.1 {code} {reason}\r\n").as_bytes())
-            .await?;
-        Ok(())
-    }
     pub async fn send_response(mut self, response: Response) -> Result<(), HttpError> {
-        let Response {
-            status,
-            mut headers,
-            body,
-        } = response;
-        let chunked = match &body {
-            Body::Bytes(bytes) => {
-                headers.set("content-length", bytes.len().to_string());
-                false
-            }
-            // A stream with a known size (e.g. a file) keeps its content-length.
-            Body::Stream(_) if headers.get("content-length").is_some() => false,
-            Body::Stream(_) => {
-                headers.set("transfer-encoding", "chunked".to_string());
-                true
-            }
-        };
-
-        self.write_status_line(status).await?;
-        for (k, v) in headers.iter() {
-            self.writer
-                .write_all(format!("{k}: {v}\r\n").as_bytes())
-                .await?;
-        }
-        self.writer.write_all(b"\r\n").await?;
-        if !self.head_only {
-            match body {
-                Body::Bytes(bytes) => self.writer.write_all(&bytes).await?,
-                Body::Stream(stream) => self.write_stream(stream, chunked).await?,
-            }
-        }
-        self.writer.flush().await?;
-        Ok(())
-    }
-
-    async fn write_stream(&mut self, mut stream: BodyStream, chunked: bool) -> io::Result<()> {
-        while let Some(chunk) = stream.next().await {
-            let chunk = chunk?;
-            if !chunked {
-                self.writer.write_all(&chunk).await?;
-            } else if !chunk.is_empty() {
-                // Write: <size-in-hex>\r\n<data>\r\n
-                self.writer
-                    .write_all(format!("{:x}\r\n", chunk.len()).as_bytes())
-                    .await?;
-                self.writer.write_all(&chunk).await?;
-                self.writer.write_all(b"\r\n").await?;
-            }
-            // Push each chunk out as it arrives so streams aren't held in the buffer.
-            self.writer.flush().await?;
-        }
-        if chunked {
-            self.writer.write_all(b"0\r\n\r\n").await?;
-        }
-        Ok(())
+        let mut buffer = Vec::with_capacity(256);
+        write_response(&mut self.writer, &mut buffer, response, self.head_only).await
     }
     pub async fn send(self, body: impl AsRef<[u8]>) -> Result<(), HttpError> {
         self.send_response(Response::new().send(body.as_ref()))
@@ -126,6 +38,119 @@ impl<W: AsyncWrite + Unpin> ResponseWriter<W> {
         let response = Response::new().json(body);
         self.send_response(response).await
     }
+}
+
+fn status_line(status: StatusCode) -> &'static str {
+    match status {
+        StatusCode::Ok => "HTTP/1.1 200 OK\r\n",
+        StatusCode::Created => "HTTP/1.1 201 Created\r\n",
+        StatusCode::Accepted => "HTTP/1.1 202 Accepted\r\n",
+        StatusCode::NoContent => "HTTP/1.1 204 No Content\r\n",
+        StatusCode::MovedPermanently => "HTTP/1.1 301 Moved Permanently\r\n",
+        StatusCode::Found => "HTTP/1.1 302 Found\r\n",
+        StatusCode::SeeOther => "HTTP/1.1 303 See Other\r\n",
+        StatusCode::NotModified => "HTTP/1.1 304 Not Modified\r\n",
+        StatusCode::TemporaryRedirect => "HTTP/1.1 307 Temporary Redirect\r\n",
+        StatusCode::PermanentRedirect => "HTTP/1.1 308 Permanent Redirect\r\n",
+        StatusCode::BadRequest => "HTTP/1.1 400 Bad Request\r\n",
+        StatusCode::Unauthorized => "HTTP/1.1 401 Unauthorized\r\n",
+        StatusCode::Forbidden => "HTTP/1.1 403 Forbidden\r\n",
+        StatusCode::NotFound => "HTTP/1.1 404 Not Found\r\n",
+        StatusCode::MethodNotAllowed => "HTTP/1.1 405 Method Not Allowed\r\n",
+        StatusCode::NotAcceptable => "HTTP/1.1 406 Not Acceptable\r\n",
+        StatusCode::RequestTimeout => "HTTP/1.1 408 Request Timeout\r\n",
+        StatusCode::Conflict => "HTTP/1.1 409 Conflict\r\n",
+        StatusCode::ContentTooLarge => "HTTP/1.1 413 Content Too Large\r\n",
+        StatusCode::UnsupportedMediaType => "HTTP/1.1 415 Unsupported Media Type\r\n",
+        StatusCode::UnprocessableContent => "HTTP/1.1 422 Unprocessable Content\r\n",
+        StatusCode::TooManyRequests => "HTTP/1.1 429 Too Many Requests\r\n",
+        StatusCode::InternalServerError => "HTTP/1.1 500 Internal Server Error\r\n",
+        StatusCode::NotImplemented => "HTTP/1.1 501 Not Implemented\r\n",
+        StatusCode::BadGateway => "HTTP/1.1 502 Bad Gateway\r\n",
+        StatusCode::ServiceUnavailable => "HTTP/1.1 503 Service Unavailable\r\n",
+        StatusCode::GatewayTimeout => "HTTP/1.1 504 Gateway Timeout\r\n",
+        StatusCode::HttpVersionNotSupported => "HTTP/1.1 505 HTTP Version Not Supported\r\n",
+    }
+}
+
+/// Serializes `response` to `writer`.
+///
+pub(crate) async fn write_response<W: AsyncWrite + Unpin>(
+    writer: &mut W,
+    buffer: &mut Vec<u8>,
+    response: Response,
+    head_only: bool,
+) -> Result<(), HttpError> {
+    let Response {
+        status,
+        mut headers,
+        body,
+    } = response;
+    let chunked = match &body {
+        Body::Bytes(bytes) => {
+            headers.set("content-length", bytes.len().to_string());
+            false
+        }
+        // A stream with a known size (e.g. a file) keeps its content-length.
+        Body::Stream(_) if headers.get("content-length").is_some() => false,
+        Body::Stream(_) => {
+            headers.set("transfer-encoding", "chunked".to_string());
+            true
+        }
+    };
+
+    buffer.clear();
+    buffer.extend_from_slice(status_line(status).as_bytes());
+    for (name, value) in headers.iter() {
+        buffer.extend_from_slice(name.as_bytes());
+        buffer.extend_from_slice(b": ");
+        buffer.extend_from_slice(value.as_bytes());
+        buffer.extend_from_slice(b"\r\n");
+    }
+    buffer.extend_from_slice(b"\r\n");
+
+    match body {
+        _ if head_only => writer.write_all(buffer).await?,
+        Body::Bytes(bytes) if bytes.len() <= INLINE_BODY_LIMIT => {
+            buffer.extend_from_slice(&bytes);
+            writer.write_all(buffer).await?;
+        }
+        Body::Bytes(bytes) => {
+            writer.write_all(buffer).await?;
+            writer.write_all(&bytes).await?;
+        }
+        Body::Stream(stream) => write_stream(writer, buffer, stream, chunked).await?,
+    }
+    writer.flush().await?;
+    Ok(())
+}
+
+/// Writes a streamed body. `buffer` holds the unsent head, which leaves with the first chunk.
+async fn write_stream<W: AsyncWrite + Unpin>(
+    writer: &mut W,
+    buffer: &mut Vec<u8>,
+    mut stream: BodyStream,
+    chunked: bool,
+) -> io::Result<()> {
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk?;
+        if !chunked {
+            buffer.extend_from_slice(&chunk);
+        } else if !chunk.is_empty() {
+            // <size-in-hex>\r\n<data>\r\n
+            write!(buffer, "{:x}\r\n", chunk.len())?;
+            buffer.extend_from_slice(&chunk);
+            buffer.extend_from_slice(b"\r\n");
+        }
+        // Push each chunk out as it arrives so streams aren't held in the buffer.
+        writer.write_all(buffer).await?;
+        writer.flush().await?;
+        buffer.clear();
+    }
+    if chunked {
+        buffer.extend_from_slice(b"0\r\n\r\n");
+    }
+    writer.write_all(buffer).await
 }
 
 #[cfg(test)]
@@ -154,7 +179,7 @@ mod tests {
         assert!(output.ends_with("\r\nHello"));
     }
     #[tokio::test]
-    async fn should_set_powered_by_header(){       
+    async fn should_set_powered_by_header() {
         let mut output = Vec::new();
         ResponseWriter::new(&mut output)
             .send_response(
