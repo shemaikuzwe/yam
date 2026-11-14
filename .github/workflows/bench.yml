@@ -1,0 +1,43 @@
+name: bench
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  bench:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # Baseline: yam from the branch this PR targets
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.base_ref || 'main' }}
+          path: main
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: bench
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: oha
+
+      - run: ./bench/run.sh
+        env:
+          BASELINE_DIR: ${{ github.workspace }}/main
+
+      - run: cat bench/results.md >> "$GITHUB_STEP_SUMMARY"
+
+      # Fork and Dependabot PRs get a read-only token, so they only get the job summary.
+      - if: >-
+          github.event_name == 'pull_request' &&
+          github.event.pull_request.head.repo.full_name == github.repository &&
+          github.actor != 'dependabot[bot]'
+        uses: marocchino/sticky-pull-request-comment@v2
+        with:
+          header: bench
+          path: bench/results.md

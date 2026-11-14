@@ -1,0 +1,23 @@
+[workspace]
+
+[package]
+name = "bench"
+version = "0.1.0"
+edition = "2024"
+description = "Load benchmarks: yam vs hyper, axum and actix-web"
+publish = false
+
+[dependencies]
+yam-http = { path = ".." }
+tokio = { version = "1.52.3", features = ["full"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+hyper = { version = "1", features = ["server", "http1"] }
+hyper-util = { version = "0.1", features = ["tokio"] }
+http-body-util = "0.1"
+axum = "0.8"
+actix-web = "4"
+
+[profile.release]
+codegen-units = 1
+lto = "thin"
