@@ -5,6 +5,8 @@ use yam_shared::chunked::parse_chunked_body;
 use crate::{compression, error::Error, request::Method};
 
 const SEPARATOR: &[u8] = b"\r\n\r\n";
+/// Smallest free space handed to a read while waiting for the response head.
+const MIN_READ: usize = 4 * 1024;
 
 /// An HTTP response. Response bodies with supported `content-encoding` values
 /// (such as `gzip` and `deflate`) are automatically decompressed.
@@ -77,19 +79,32 @@ impl Response {
 }
 
 impl Response {
-    pub(crate) async fn read<S>(stream: &mut S, method: Method) -> Result<(Response, bool), Error>
+    /// Reads one response. `buffer` must be empty; it is the connection's
+    /// reusable read buffer, so reads are large instead of growing from zero.
+    pub(crate) async fn read<S>(
+        stream: &mut S,
+        buffer: &mut Vec<u8>,
+        method: Method,
+    ) -> Result<(Response, bool), Error>
     where
         S: AsyncRead + Unpin,
     {
-        let mut buffer = Vec::new();
+        let mut scanned: usize = 0;
         let idx = loop {
-            if let Some(idx) = buffer
+            // Resume the search just before the new bytes, in case the
+            // separator straddles two reads.
+            let start = scanned.saturating_sub(SEPARATOR.len() - 1);
+            if let Some(idx) = buffer[start..]
                 .windows(SEPARATOR.len())
                 .position(|window| window == SEPARATOR)
             {
-                break idx;
+                break start + idx;
             }
-            if stream.read_buf(&mut buffer).await? == 0 {
+            scanned = buffer.len();
+            if buffer.capacity() - buffer.len() < MIN_READ {
+                buffer.reserve(MIN_READ);
+            }
+            if stream.read_buf(buffer).await? == 0 {
                 return Err(Error::InvalidResponse(
                     "response is missing header separator".into(),
                 ));
@@ -100,11 +115,12 @@ impl Response {
         let mut keep_alive = !headers
             .iter()
             .any(|(name, value)| name == "connection" && value.eq_ignore_ascii_case("close"));
-        let mut body = buffer[idx + SEPARATOR.len()..].to_vec();
+        let rest = &buffer[idx + SEPARATOR.len()..];
+        let mut body = Vec::new();
 
         if has_body(method, status) {
             if is_chunked(&headers) {
-                body = read_chunked(stream, body).await?;
+                body = read_chunked(stream, rest.to_vec()).await?;
             } else {
                 match headers
                     .iter()
@@ -115,22 +131,21 @@ impl Response {
                         let length = value.parse::<usize>().map_err(|_| {
                             Error::InvalidResponse("response has invalid content-length".into())
                         })?;
-                        let read = body.len();
+                        let read = rest.len().min(length);
+                        body = Vec::with_capacity(length);
+                        body.extend_from_slice(&rest[..read]);
                         if read < length {
                             body.resize(length, 0);
                             stream.read_exact(&mut body[read..]).await?;
-                        } else {
-                            body.truncate(length);
                         }
                     }
                     None => {
+                        body.extend_from_slice(rest);
                         stream.read_to_end(&mut body).await?;
                         keep_alive = false;
                     }
                 }
             }
-        } else {
-            body.clear();
         }
 
         let body = compression::decode(&mut headers, body)?;
@@ -172,6 +187,9 @@ where
             return Ok(body);
         }
         raw.drain(..consumed);
+        if raw.capacity() - raw.len() < MIN_READ {
+            raw.reserve(MIN_READ);
+        }
         if stream.read_buf(&mut raw).await? == 0 {
             return Err(Error::InvalidResponse(
                 "chunked response ended before the terminal chunk".into(),

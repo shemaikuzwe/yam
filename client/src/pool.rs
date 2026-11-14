@@ -15,6 +15,8 @@ use url::Url;
 
 use crate::error::Error;
 
+const READ_BUFFER_SIZE: usize = 8 * 1024;
+
 pub(crate) enum Stream {
     Plain(TcpStream),
     Tls(Box<TlsStream<TcpStream>>),
@@ -23,6 +25,8 @@ pub(crate) enum Stream {
 pub(crate) struct Conn {
     pub(crate) stream: Stream,
     pub(crate) reusable: bool,
+    /// Read buffer reused across requests on this connection.
+    pub(crate) buf: Vec<u8>,
 }
 
 pub(crate) struct ConnManager {
@@ -38,6 +42,8 @@ impl managed::Manager for ConnManager {
 
     async fn create(&self) -> Result<Conn, Error> {
         let tcp = TcpStream::connect((self.host.as_str(), self.port)).await?;
+        // Requests are written in one go, so Nagle would only add latency.
+        tcp.set_nodelay(true)?;
         let stream = match self.scheme.as_str() {
             "http" => Stream::Plain(tcp),
             "https" => {
@@ -51,6 +57,7 @@ impl managed::Manager for ConnManager {
         Ok(Conn {
             stream,
             reusable: true,
+            buf: Vec::with_capacity(READ_BUFFER_SIZE),
         })
     }
 
@@ -67,10 +74,9 @@ impl managed::Manager for ConnManager {
     }
 }
 
-type PoolKey = (String, String, u16);
-
+/// Pools keyed by origin (`scheme://host[:port]`), so lookups borrow from the URL.
 #[derive(Default)]
-pub(crate) struct Pools(Mutex<HashMap<PoolKey, managed::Pool<ConnManager>>>);
+pub(crate) struct Pools(Mutex<HashMap<String, managed::Pool<ConnManager>>>);
 
 impl fmt::Debug for Pools {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -108,22 +114,22 @@ impl Pools {
         let port = url
             .port_or_known_default()
             .ok_or_else(|| Error::MissingPort(url.to_string()))?;
-        let key = (scheme.to_string(), host.to_string(), port);
+        let origin = &url[url::Position::BeforeScheme..url::Position::BeforePath];
 
         let mut pools = self.0.lock().expect("pool map lock poisoned");
-        if let Some(pool) = pools.get(&key) {
+        if let Some(pool) = pools.get(origin) {
             return Ok(pool.clone());
         }
         let manager = ConnManager {
-            scheme: key.0.to_owned(),
-            host: key.1.to_owned(),
+            scheme: scheme.to_owned(),
+            host: host.to_owned(),
             port,
             tls_configuration: Arc::clone(tls_configuration),
         };
         let pool = managed::Pool::builder(manager)
             .build()
             .map_err(|e| Error::Pool(e.to_string()))?;
-        pools.insert(key, pool.clone());
+        pools.insert(origin.to_owned(), pool.clone());
         Ok(pool)
     }
 }
