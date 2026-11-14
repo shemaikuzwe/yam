@@ -1,12 +1,20 @@
-use std::{future::Future, io, pin::Pin, sync::Arc, time::Duration};
+use std::{
+    future::Future,
+    io,
+    pin::{Pin, pin},
+    sync::Arc,
+    time::Duration,
+};
 
 use crate::{
     Error,
     request::{ConnectionType, Request, RequestReader, get_connection_type},
-    response::{HttpError, IntoResponse, Response, ResponseWriter},
+    response::{HttpError, IntoResponse, Response, write_response},
 };
 use tokio::net::{TcpListener, TcpStream};
-use tokio::time::timeout;
+use tokio::time::{Instant, sleep};
+
+const IDLE_TIMEOUT: Duration = Duration::from_secs(30);
 
 pub struct Server;
 
@@ -48,22 +56,29 @@ pub async fn handle_request(stream: TcpStream, handler: Arc<dyn Handler>) -> Res
     let (read_stream, mut write_stream) = stream.into_split();
 
     let mut request_reader = RequestReader::new(read_stream);
+    // Reused for every response on this connection.
+    let mut write_buffer = Vec::with_capacity(512);
+    let mut idle = pin!(sleep(IDLE_TIMEOUT));
     loop {
-        let request = match timeout(Duration::from_secs(30), request_reader.handle_request()).await
-        {
-            Err(_elapsed) => return Ok(()), // Idle too long: close without an error response.
-            Ok(Err(Error::GracefulEof)) => return Ok(()),
-            Ok(Err(err)) => {
+        // Pushing a live timer's deadline back is far cheaper than arming a new one per request.
+        idle.as_mut().reset(Instant::now() + IDLE_TIMEOUT);
+        let request = tokio::select! {
+            biased;
+            request = request_reader.handle_request() => request,
+            // Idle too long: close without an error response.
+            () = &mut idle => return Ok(()),
+        };
+        let request = match request {
+            Err(Error::GracefulEof) => return Ok(()),
+            Err(err) => {
                 let mut response = HttpError::from(err).into_response();
                 response
                     .headers
                     .set("connection", ConnectionType::Close.to_string());
-                ResponseWriter::new(&mut write_stream)
-                    .send_response(response)
-                    .await?;
+                write_response(&mut write_stream, &mut write_buffer, response, false).await?;
                 return Ok(());
             }
-            Ok(Ok(request)) => request,
+            Ok(request) => request,
         };
 
         let connection_type = get_connection_type(&request);
@@ -76,10 +91,7 @@ pub async fn handle_request(stream: TcpStream, handler: Arc<dyn Handler>) -> Res
         response
             .headers
             .set("connection", connection_type.to_string());
-        ResponseWriter::new(&mut write_stream)
-            .head_only(is_head)
-            .send_response(response)
-            .await?;
+        write_response(&mut write_stream, &mut write_buffer, response, is_head).await?;
 
         if connection_type == ConnectionType::Close {
             return Ok(());

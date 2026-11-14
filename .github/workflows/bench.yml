@@ -26,9 +26,10 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: bench
-      - uses: taiki-e/install-action@v2
-        with:
-          tool: oha
+      # Prebuilt binary: install-action falls back to compiling oha from source (~2-3 min).
+      - run: |
+          curl -fsSL -o /usr/local/bin/oha https://github.com/hatoo/oha/releases/download/v1.17.0/oha-linux-amd64
+          chmod +x /usr/local/bin/oha
 
       - run: ./bench/run.sh
         env:

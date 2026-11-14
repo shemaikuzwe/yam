@@ -1,12 +1,16 @@
-use std::{collections::HashMap, str};
+use std::str;
 
 use thiserror::Error;
 
 const SEPARATOR: &[u8] = b"\r\n";
 
+/// Header names are stored lowercase, in insertion order.
+///
+/// A request or response carries a handful of headers, so a flat list scanned
+/// with a case-insensitive compare beats hashing and needs no allocation to look up.
 #[derive(Debug, Default, Clone)]
 pub struct Headers {
-    headers: HashMap<String, Vec<String>>,
+    entries: Vec<(String, String)>,
 }
 
 impl Headers {
@@ -25,23 +29,33 @@ impl Headers {
     /// assert_eq!(headers.get("Content-Type"), Some("application/json"));
     /// ```
     pub fn get(&self, name: &str) -> Option<&str> {
-        self.headers
-            .get(&name.to_lowercase())?
-            .first()
-            .map(String::as_str)
+        self.get_all(name).next()
     }
 
     /// Replaces all values associated with `name`.
     pub fn set(&mut self, name: &str, value: String) {
-        self.headers.insert(name.to_lowercase(), vec![value]);
+        let mut value = Some(value);
+        // The first match keeps its position and takes the new value; the rest go.
+        self.entries.retain_mut(|(key, current)| {
+            if !key.eq_ignore_ascii_case(name) {
+                return true;
+            }
+            match value.take() {
+                Some(value) => {
+                    *current = value;
+                    true
+                }
+                None => false,
+            }
+        });
+        if let Some(value) = value {
+            self.entries.push((name.to_ascii_lowercase(), value));
+        }
     }
 
     /// Adds a value without replacing values already associated with `name`.
     pub fn append(&mut self, name: &str, value: String) {
-        self.headers
-            .entry(name.to_lowercase())
-            .or_default()
-            .push(value);
+        self.entries.push((name.to_ascii_lowercase(), value));
     }
 
     /// Returns all values associated with `name`.
@@ -57,20 +71,22 @@ impl Headers {
     /// assert_eq!(values, ["text/html", "application/json"]);
     /// ```
     pub fn get_all(&self, name: &str) -> impl Iterator<Item = &str> {
-        self.headers
-            .get(&name.to_lowercase())
-            .into_iter()
-            .flatten()
-            .map(String::as_str)
+        self.entries
+            .iter()
+            .filter(move |(key, _)| key.eq_ignore_ascii_case(name))
+            .map(|(_, value)| value.as_str())
     }
 
     /// Returns `true` if `Transfer-Encoding` contains `chunked`.
     pub fn is_chunked(&self) -> bool {
-        self.get_all("transfer-encoding")
-            .any(|value| value.split(',').any(|token| token.trim().eq_ignore_ascii_case("chunked")))
+        self.get_all("transfer-encoding").any(|value| {
+            value
+                .split(',')
+                .any(|token| token.trim().eq_ignore_ascii_case("chunked"))
+        })
     }
 
-    /// Iterates over every header name and value pair.
+    /// Iterates over every header name and value pair, in insertion order.
     ///
     /// Names with multiple values are yielded once for each value.
     ///
@@ -83,11 +99,9 @@ impl Headers {
     /// assert_eq!(headers.iter().collect::<Vec<_>>(), [("content-length", "12")]);
     /// ```
     pub fn iter(&self) -> impl Iterator<Item = (&str, &str)> {
-        self.headers.iter().flat_map(|(name, values)| {
-            values
-                .iter()
-                .map(move |value| (name.as_str(), value.as_str()))
-        })
+        self.entries
+            .iter()
+            .map(|(name, value)| (name.as_str(), value.as_str()))
     }
     pub fn parse(&mut self, data: &[u8]) -> Result<(usize, bool), HeaderParseError> {
         let mut read = 0;
