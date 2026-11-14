@@ -2,7 +2,7 @@ use std::{format, future::Future, io, path::PathBuf, sync::Arc};
 
 use tokio::net::TcpListener;
 use yam_server::{
-    Handler, HandlerFuture, Request, Response, Server, StatusCode, request::Method,
+    Handler, HandlerFuture, Request, Response, Server, ServerConfig, StatusCode, request::Method,
     response::IntoResponse,
 };
 
@@ -221,22 +221,28 @@ impl Router {
         let path = format!("{}{path}", self.route_prefix);
         self.routes.insert(method, &path, Arc::new(handler));
     }
-    /// Serves router on an already-bound TCP listener.
+    /// Serves router on an already-bound TCP listener. See [`ServerConfig`] for
+    /// limits and graceful shutdown.
     ///
     /// ```no_run
     /// use tokio::net::TcpListener;
     /// use yam_router::router::Router;
+    /// use yam_server::ServerConfig;
     ///
     /// # async fn run() -> std::io::Result<()> {
     /// let mut app = Router::new(Default::default());
     /// app.get("/", async |_| "Hello world");
     ///
     /// let listener = TcpListener::bind("localhost:3000").await?;
-    /// app.serve(listener).await
+    /// app.serve(listener, ServerConfig {
+    ///     shutdown: Some(Box::pin(async { tokio::signal::ctrl_c().await.unwrap() })),
+    ///     ..Default::default()
+    /// })
+    /// .await
     /// # }
     /// ```
-    pub async fn serve(self, listener: TcpListener) -> io::Result<()> {
-        Server::serve(listener, self).await
+    pub async fn serve(self, listener: TcpListener, config: ServerConfig) -> io::Result<()> {
+        Server::serve(listener, self, config).await
     }
 }
 

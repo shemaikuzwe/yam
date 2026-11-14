@@ -64,7 +64,7 @@ async fn main() -> std::io::Result<()> {
     });
 
     let listener = TcpListener::bind("localhost:3000").await?;
-    app.serve(listener).await
+    app.serve(listener, Default::default()).await
 }
 ```
 

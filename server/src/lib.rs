@@ -11,7 +11,7 @@
 //! let listener = TcpListener::bind("localhost:3000").await?;
 //! Server::serve(listener, |_request: Request| async {
 //!     Response::new().send("Hello world")
-//! }).await
+//! }, Default::default()).await
 //! # }
 //! ```
 
@@ -28,4 +28,4 @@ pub use request::{
 pub use response::{
     Body, BodyStream, HttpError, IntoResponse, Json, Response, ResponseWriter, StatusCode,
 };
-pub use server::{Handler, HandlerFuture, Server};
+pub use server::{Handler, HandlerFuture, Server, ServerConfig};

@@ -287,7 +287,10 @@ impl HttpError {
     pub fn status(&self) -> StatusCode {
         match self {
             HttpError::Io(_) => StatusCode::InternalServerError,
-            HttpError::Request(request::Error::RequestTooLarge) => StatusCode::ContentTooLarge,
+            HttpError::Request(
+                request::Error::RequestTooLarge
+                | request::Error::Parse(request::ParseError::RequestTooLarge),
+            ) => StatusCode::ContentTooLarge,
             HttpError::Request(request::Error::MethodNotAllowed) => StatusCode::NotImplemented,
             HttpError::Request(request::Error::Parse(
                 request::ParseError::UnsupportedHttpVersion,

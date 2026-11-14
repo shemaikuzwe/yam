@@ -31,5 +31,5 @@ async fn main() {
         .unwrap();
     info!("Server started on http://localhost:{:?}", port);
 
-    app.serve(listener).await.unwrap()
+    app.serve(listener, Default::default()).await.unwrap()
 }

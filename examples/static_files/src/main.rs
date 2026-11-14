@@ -26,5 +26,5 @@ async fn main() {
         .unwrap();
 
     println!("Open http://localhost:3000/index.html");
-    app.serve(listener).await.unwrap()
+    app.serve(listener, Default::default()).await.unwrap()
 }

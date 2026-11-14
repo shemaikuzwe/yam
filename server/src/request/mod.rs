@@ -10,6 +10,7 @@ pub mod request_ext;
 // Re-export main types and functions
 pub use error::{Error, ParamError, ParseError};
 pub use method::{get_connection_type, ConnectionType, Method};
+pub(crate) use request::DEFAULT_MAX_BODY_SIZE;
 pub use request::Request;
 pub use request_ext::Extensions;
 pub use request_line::RequestLine;
