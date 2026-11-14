@@ -14,7 +14,6 @@ use crate::{
 use tokio::net::{TcpListener, TcpStream};
 use tokio::time::{Instant, sleep};
 
-/// How long a connection may take to deliver its next request.
 const IDLE_TIMEOUT: Duration = Duration::from_secs(30);
 
 pub struct Server;

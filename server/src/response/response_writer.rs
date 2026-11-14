@@ -6,7 +6,6 @@ use tokio::io::{AsyncWrite, AsyncWriteExt};
 
 use super::response::{Body, BodyStream, HttpError, Response, StatusCode};
 
-/// Bodies up to this size are copied next to the head so the response leaves in one write.
 const INLINE_BODY_LIMIT: usize = 16 * 1024;
 
 #[derive(Debug)]
@@ -76,8 +75,6 @@ fn status_line(status: StatusCode) -> &'static str {
 
 /// Serializes `response` to `writer`.
 ///
-/// `buffer` is scratch space for the head (and small bodies). Its contents are
-/// replaced, so a connection can reuse one buffer for every response it sends.
 pub(crate) async fn write_response<W: AsyncWrite + Unpin>(
     writer: &mut W,
     buffer: &mut Vec<u8>,
