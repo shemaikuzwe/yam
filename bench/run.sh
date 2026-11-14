@@ -69,53 +69,54 @@ done
 
 # yam (main) and yam (this PR) are treated as two separate frameworks.
 jq -rs --arg cmd "oha -z $DURATION -c $CONNECTIONS" --arg cpus "$(nproc)" '
-  def ms: . * 100 | round / 100 | tostring;
+  # always 2 decimals, e.g. 41 -> "41.00"
+  def ms: . * 100 | round | tostring | ("00" + .)[-3:] as $p | (.[:-2] | if . == "" then "0" else . end) + "." + $p[-2:];
   def num: floor | tostring | [explode | reverse | _nwise(3) | reverse | implode] | reverse | join(",");
-  def times: (if . < 1 then . * 100 | round / 100 else . * 10 | round / 10 end)
-    | tostring | (if test("\\.") then . else . + ".0" end) + "×";
+  def x: (if . < 10 then . * 10 | round / 10 else round end) | tostring | . + "×";
+  # ratio = row / yam. Within ±10% is CI noise, so call it a tie.
+  def vs: if . > 1.1 then "\(x) faster" elif . < 0.9 then "\(1 / . | x) slower" else "≈ same" end;
 
   any(.[]; .fw == "yam-main") as $has_main
   | def title:
       if . == "yam-main" then "**yam (main)**"
       elif . == "yam" then (if $has_main then "**yam (this PR)**" else "**yam**" end)
       else . end;
-    # baselines every row is compared against: [fw, column title]
-    (if $has_main then [["yam-main", "vs yam (main)"], ["yam", "vs yam (this PR)"]]
-     else [["yam", "vs yam"]] end) as $refs
-  | (reduce .[] as $r ({}; .[$r.fw][$r.route] = $r.rps)) as $rps
+    def avg(f): map(f) | add / length;
+    (reduce .[] as $r ({}; .[$r.fw][$r.route] = $r.rps)) as $rps
   | (group_by(.fw)
-     | map({fw: .[0].fw, rps: (map(.rps) | add / length), p50: (map(.p50) | add / length)})
+     | map({fw: .[0].fw, rps: avg(.rps), p50: avg(.p50), p99: avg(.p99)})
      | sort_by(-.rps)) as $avg
-  | (reduce $avg[] as $a ({}; .[$a.fw] = $a.rps)) as $avg_rps
-  | ($refs | map(.[1]) | join(" | ")) as $ref_cols
-  | ($refs | map("--:") | join("|")) as $ref_align
+  | ($avg | map(select(.fw == "yam"))[0]) as $yam
+  | ($avg | map(select(.fw == "yam-main"))[0]) as $main
   | [
       "## Benchmarks",
       "",
-      "yam vs hyper, axum and actix-web. Every server returns identical responses.",
+      (if $has_main then
+        ($yam.rps / $main.rps) as $d
+        | "**This PR vs main: \(if $d > 1.1 then "✅ \($d | vs)" elif $d < 0.9 then "❌ \($d | vs)" else "≈ no measurable change" end)**"
+          + " · \($main.rps | num) → \($yam.rps | num) req/s · p50 \($main.p50 | ms) → \($yam.p50 | ms) ms",
+        ""
+      else empty end),
+      "| framework | req/s | vs yam | p50 (ms) | p99 (ms) |",
+      "|---|--:|--:|--:|--:|",
+      ($avg[] | "| \(.fw | title) | \(.rps | num) | \(if .fw == "yam" then "—" else .rps / $yam.rps | vs end) | \(.p50 | ms) | \(.p99 | ms) |"),
       "",
-      "`\($cmd)` · \($cpus) CPUs · keep-alive · release build",
+      "Averaged over 3 routes. Higher req/s and lower latency is better. Gaps under ±10% are CI noise, shown as **≈ same**.",
       "",
-      "### Summary",
+      "<details><summary>Per route</summary>",
       "",
-      "| framework | avg req/s | \($ref_cols) | avg p50 (ms) |",
-      "|---|--:|\($ref_align)|--:|",
-      ($avg[] | . as $a
-        | "| \($a.fw | title) | \($a.rps | num) | \([$refs[] | $a.rps / $avg_rps[.[0]] | times] | join(" | ")) | \($a.p50 | ms) |"),
+      "| route | framework | req/s | vs yam | p50 (ms) | p99 (ms) |",
+      "|---|---|--:|--:|--:|--:|",
+      (group_by(.route)[] | sort_by(-.rps)[]
+        | "| `\(.route)` | \(.fw | title) | \(.rps | num) | \(if .fw == "yam" then "—" else .rps / $rps.yam[.route] | vs end) | \(.p50 | ms) | \(.p99 | ms) |"),
       "",
-      "### Per route",
+      "</details>",
       "",
-      "| framework | route | req/s | \($ref_cols) | p50 (ms) | p99 (ms) |",
-      "|---|---|--:|\($ref_align)|--:|--:|",
-      (.[] | . as $r
-        | "| \($r.fw | title) | `\($r.route)` | \($r.rps | num) | \([$refs[] | $r.rps / $rps[.[0]][$r.route] | times] | join(" | ")) | \($r.p50 | ms) | \($r.p99 | ms) |"),
+      "<details><summary>Setup</summary>",
       "",
-      "<details><summary>How to read this</summary>",
-      "",
-      "- **req/s**: throughput, higher is better. **p50 / p99**: median and slowest-1% latency, lower is better.",
-      "- **vs yam (…)**: that row'"'"'s req/s divided by that yam'"'"'s req/s on the same route. Above 1.0× is faster, below is slower.",
-      "- **yam (main)**: yam built from the base branch, using this PR'"'"'s bench harness. Compare it with **yam (this PR)** to see what the PR changed.",
-      "- Results come from a shared CI runner, so absolute numbers vary by about ±10–20% between runs. Compare the ratios, which are measured on the same machine in the same job.",
+      "- `\($cmd)` · \($cpus) CPUs · keep-alive · release build. Every server returns identical responses.",
+      "- **yam (main)** is yam built from the base branch with this PR'"'"'s bench harness, so only yam itself differs.",
+      "- Shared CI runner: absolute req/s shifts ±10–20% between runs. The comparisons hold because all servers run in the same job.",
       "- Routes: `/` plain text · `/json` serde JSON · `/users/{id}` path param.",
       "",
       "</details>"
