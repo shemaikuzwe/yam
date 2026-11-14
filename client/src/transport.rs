@@ -23,7 +23,7 @@ pub(crate) async fn send(
     tls_configuration: &Arc<ClientConfig>,
     method: Method,
     request_head: Vec<u8>,
-    body: Vec<u8>,
+    body: &[u8],
     chunks: Option<ChunkStream>,
 ) -> Result<Response, Error> {
     let mut conn = pools.get(url, tls_configuration).await?;
@@ -48,7 +48,7 @@ async fn write_and_read<S>(
     buf: &mut Vec<u8>,
     method: Method,
     mut request: Vec<u8>,
-    body: Vec<u8>,
+    body: &[u8],
     chunks: Option<ChunkStream>,
 ) -> Result<(Response, bool), Error>
 where
@@ -66,12 +66,12 @@ where
             stream.write_all(&encode_chunk(b"")).await?;
         }
         None if body.len() <= INLINE_BODY_LIMIT => {
-            request.extend_from_slice(&body);
+            request.extend_from_slice(body);
             stream.write_all(&request).await?;
         }
         None => {
             stream.write_all(&request).await?;
-            stream.write_all(&body).await?;
+            stream.write_all(body).await?;
         }
     }
     stream.flush().await?;

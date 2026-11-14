@@ -15,7 +15,7 @@ async fn spawn_router(router: Router) -> (SocketAddr, JoinHandle<()>) {
         .local_addr()
         .expect("listener should have an address");
     let server = tokio::spawn(async move {
-        router.serve(listener).await.expect("server should run");
+        router.serve(listener, Default::default()).await.expect("server should run");
     });
 
     (address, server)
