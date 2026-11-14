@@ -24,7 +24,7 @@ cargo build --release --quiet
 for fw in "${FRAMEWORKS[@]}"; do
   ./target/release/"$fw" &
   pid=$!
-  trap 'kill $pid 2>/dev/null' EXIT
+  trap 'kill $pid 2>/dev/null || true' EXIT
 
   until curl -s -o /dev/null "$URL/"; do sleep 0.1; done
 
