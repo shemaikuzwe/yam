@@ -41,17 +41,15 @@ for fw in "${FRAMEWORKS[@]}"; do
   pid=$!
   trap 'kill $pid 2>/dev/null || true' EXIT
 
-  # Wait up to ~10s, stop early if the server exits.
-  ready=0
-  for _ in {1..100}; do
-    kill -0 "$pid" 2>/dev/null || break
-    if curl -s -o /dev/null --max-time 1 "$URL/"; then ready=1; break; fi
+  # Wait up to 10s, stop early if the server exits.
+  deadline=$((SECONDS + 10))
+  until curl -s -o /dev/null --max-time 1 "$URL/"; do
+    if ! kill -0 "$pid" 2>/dev/null || (( SECONDS >= deadline )); then
+      echo "$fw failed to start" >&2
+      exit 1
+    fi
     sleep 0.1
   done
-  if (( ! ready )); then
-    echo "$fw failed to start" >&2
-    exit 1
-  fi
 
   for route in "${ROUTES[@]}"; do
     oha -z 2s -c "$CONNECTIONS" --no-tui "$URL$route" > /dev/null
