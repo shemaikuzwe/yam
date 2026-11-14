@@ -12,16 +12,16 @@ resolver = "3"
 members = [".", "shared", "server", "router", "client"]
 
 [workspace.package]
-version = "0.1.0"
+version = "1.0.0"
 edition = "2024"
 license = "MIT"
 repository = "https://github.com/shemaikuzwe/yam"
 
 [workspace.dependencies]
-yam-shared = { path = "shared", version = "0.1.0" }
-yam-server = { path = "server", version = "0.1.0" }
-yam-router = { path = "router", version = "0.1.0" }
-yam-client = { path = "client", version = "0.1.0" }
+yam-shared = { path = "shared", version = "1.0.0" }
+yam-server = { path = "server", version = "1.0.0" }
+yam-router = { path = "router", version = "1.0.0" }
+yam-client = { path = "client", version = "1.0.0" }
 
 [dependencies]
 yam-server = { workspace = true, optional = true }
