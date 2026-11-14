@@ -8,13 +8,13 @@ use std::{
 
 use crate::{
     Error,
-    request::{ConnectionType, Request, RequestReader, get_connection_type},
+    request::{ConnectionType, DEFAULT_MAX_BODY_SIZE, Request, RequestReader, get_connection_type},
     response::{HttpError, IntoResponse, Response, write_response},
 };
+use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
+use tokio::sync::watch;
 use tokio::time::{Instant, sleep};
-
-const IDLE_TIMEOUT: Duration = Duration::from_secs(30);
 
 pub struct Server;
 
@@ -34,41 +34,113 @@ where
         Box::pin(async move { Ok(fut.await.into_response()) })
     }
 }
-impl Server {
-    pub async fn serve<H>(listener: TcpListener, handler: H) -> io::Result<()>
-    where
-        H: Handler,
-    {
-        let handler = Arc::new(handler);
-        loop {
-            let (stream, _addr) = listener.accept().await?;
-            // Disable Nagle so small responses aren't held back waiting on delayed ACKs.
-            let _ = stream.set_nodelay(true);
 
-            let handler = Arc::clone(&handler);
+pub struct ServerConfig {
+    /// How long a connection may take to send its next complete request
+    /// before it is closed.
+    pub read_timeout: Duration,
+    /// Largest request body accepted. Bigger bodies get `413 Content Too Large`.
+    pub max_body_size: usize,
+    /// When this completes the server stops accepting connections, waits for
+    /// in-flight requests to finish, and `serve` returns. `None` serves forever.
+    pub shutdown: Option<Pin<Box<dyn Future<Output = ()> + Send>>>,
+}
 
-            tokio::spawn(async move { handle_request(stream, handler).await });
+impl Default for ServerConfig {
+    fn default() -> Self {
+        Self {
+            read_timeout: Duration::from_secs(30),
+            max_body_size: DEFAULT_MAX_BODY_SIZE,
+            shutdown: None,
         }
     }
 }
 
-pub async fn handle_request(stream: TcpStream, handler: Arc<dyn Handler>) -> Result<(), HttpError> {
+impl Server {
+    /// ```no_run
+    /// use tokio::net::TcpListener;
+    /// use yam_server::{Request, Response, Server, ServerConfig};
+    ///
+    /// # async fn run() -> std::io::Result<()> {
+    /// let listener = TcpListener::bind("localhost:3000").await?;
+    /// let config = ServerConfig {
+    ///     shutdown: Some(Box::pin(async { tokio::signal::ctrl_c().await.unwrap() })),
+    ///     ..Default::default()
+    /// };
+    /// Server::serve(
+    ///     listener,
+    ///     |_request: Request| async { Response::new().send("Hello world") },
+    ///     config,
+    /// )
+    /// .await
+    /// # }
+    /// ```
+    pub async fn serve<H>(listener: TcpListener, handler: H, config: ServerConfig) -> io::Result<()>
+    where
+        H: Handler,
+    {
+        let handler: Arc<dyn Handler> = Arc::new(handler);
+        let ServerConfig {
+            read_timeout,
+            max_body_size,
+            shutdown,
+        } = config;
+        let mut shutdown = shutdown.unwrap_or_else(|| Box::pin(std::future::pending()));
+        // Every connection holds a receiver; `closed()` resolves once all are dropped.
+        let (stop, stopped) = watch::channel(false);
+        loop {
+            let (stream, _addr) = tokio::select! {
+                accepted = listener.accept() => accepted?,
+                _ = &mut shutdown => break,
+            };
+            // Disable Nagle so small responses aren't held back waiting on delayed ACKs.
+            let _ = stream.set_nodelay(true);
+
+            let handler = Arc::clone(&handler);
+            let config = ServerConfig {
+                read_timeout,
+                max_body_size,
+                shutdown: None,
+            };
+            let stopped = stopped.clone();
+
+            tokio::spawn(async move { handle_request(stream, handler, config, stopped).await });
+        }
+
+        drop(listener);
+        drop(stopped);
+        let _ = stop.send(true);
+        stop.closed().await;
+        Ok(())
+    }
+}
+
+/// Serves requests on one connection until the client closes it, it idles past
+/// `config.read_timeout`, or `stopped` turns `true` while waiting for a request.
+pub async fn handle_request(
+    stream: TcpStream,
+    handler: Arc<dyn Handler>,
+    config: ServerConfig,
+    mut stopped: watch::Receiver<bool>,
+) -> Result<(), HttpError> {
+    let remote_addr = stream.peer_addr().ok();
     let (read_stream, mut write_stream) = stream.into_split();
 
-    let mut request_reader = RequestReader::new(read_stream);
+    let mut request_reader = RequestReader::new(read_stream).max_body_size(config.max_body_size);
     // Reused for every response on this connection.
     let mut write_buffer = Vec::with_capacity(512);
-    let mut idle = pin!(sleep(IDLE_TIMEOUT));
+    let mut idle = pin!(sleep(config.read_timeout));
     loop {
         // Pushing a live timer's deadline back is far cheaper than arming a new one per request.
-        idle.as_mut().reset(Instant::now() + IDLE_TIMEOUT);
+        idle.as_mut().reset(Instant::now() + config.read_timeout);
         let request = tokio::select! {
             biased;
-            request = request_reader.handle_request() => request,
+            request = read_request(&mut request_reader, &mut write_stream) => request,
             // Idle too long: close without an error response.
             () = &mut idle => return Ok(()),
+            _ = stopped.wait_for(|stopped| *stopped) => return Ok(()),
         };
-        let request = match request {
+        let mut request = match request {
             Err(Error::GracefulEof) => return Ok(()),
             Err(err) => {
                 let mut response = HttpError::from(err).into_response();
@@ -80,14 +152,18 @@ pub async fn handle_request(stream: TcpStream, handler: Arc<dyn Handler>) -> Res
             }
             Ok(request) => request,
         };
+        request.remote_addr = remote_addr;
 
-        let connection_type = get_connection_type(&request);
+        let mut connection_type = get_connection_type(&request);
         let is_head = request.method().eq_ignore_ascii_case("HEAD");
 
         let mut response = match handler.call(request).await {
             Ok(response) => response,
             Err(err) => err.into_response(),
         };
+        if *stopped.borrow() {
+            connection_type = ConnectionType::Close;
+        }
         response
             .headers
             .set("connection", connection_type.to_string());
@@ -97,4 +173,17 @@ pub async fn handle_request(stream: TcpStream, handler: Arc<dyn Handler>) -> Res
             return Ok(());
         }
     }
+}
+
+/// Reads the head, answers `Expect: 100-continue` so the client sends the body, then reads the body.
+async fn read_request<R, W>(reader: &mut RequestReader<R>, writer: &mut W) -> Result<Request, Error>
+where
+    R: AsyncRead + Unpin,
+    W: AsyncWrite + Unpin,
+{
+    let request = reader.read_head().await?;
+    if request.expects_continue() {
+        writer.write_all(b"HTTP/1.1 100 Continue\r\n\r\n").await?;
+    }
+    reader.read_body(request).await
 }

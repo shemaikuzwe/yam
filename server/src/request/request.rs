@@ -1,4 +1,4 @@
-use std::{cmp::min, collections::HashMap};
+use std::{cmp::min, collections::HashMap, net::SocketAddr};
 
 use yam_shared::chunked::parse_chunked_body;
 
@@ -17,7 +17,11 @@ pub struct Request {
     pub(super) path_params: HashMap<String, String>,
     pub(super) parse_state: ParseState,
     pub(super) extensions: Extensions,
+    pub(crate) remote_addr: Option<SocketAddr>,
+    pub(super) max_body_size: usize,
 }
+
+pub(crate) const DEFAULT_MAX_BODY_SIZE: usize = 2 * 1024 * 1024;
 
 #[derive(Debug, PartialEq)]
 pub enum ParseState {
@@ -42,6 +46,8 @@ impl Request {
             path_params: HashMap::new(),
             request_line: RequestLine::default(),
             extensions: Extensions::default(),
+            remote_addr: None,
+            max_body_size: DEFAULT_MAX_BODY_SIZE,
         }
     }
 
@@ -95,6 +101,15 @@ impl Request {
                     }
                     read += result.0;
                     if result.1 {
+                        // Rejected before the body arrives, so `Expect: 100-continue` gets a 413 instead of a 100.
+                        let too_large = self
+                            .headers
+                            .get("content-length")
+                            .and_then(|length| length.parse::<usize>().ok())
+                            .is_some_and(|length| length > self.max_body_size);
+                        if too_large {
+                            return Err(ParseError::RequestTooLarge);
+                        }
                         if self.has_body() {
                             self.parse_state = ParseState::Body
                         } else {
@@ -103,9 +118,9 @@ impl Request {
                     }
                 }
                 ParseState::Body => {
-                    const MAX_BODY_SIZE: usize = 2 * 1024 * 1024;
                     if self.headers.is_chunked() {
-                        let (consumed, done) = parse_chunked_body(curr_data, &mut self.body, MAX_BODY_SIZE)?;
+                        let (consumed, done) =
+                            parse_chunked_body(curr_data, &mut self.body, self.max_body_size)?;
                         read += consumed;
                         if done {
                             self.parse_state = ParseState::Done;
@@ -121,9 +136,6 @@ impl Request {
                     if length == 0 {
                         self.parse_state = ParseState::Done;
                         return Ok(read);
-                    }
-                    if length > MAX_BODY_SIZE {
-                        return Err(ParseError::RequestTooLarge);
                     }
                     let remaining = min(curr_data.len(), length - self.body.len());
                     self.body.extend_from_slice(&curr_data[..remaining]);
@@ -157,6 +169,21 @@ impl Request {
 
     pub fn set_params(&mut self, params: HashMap<String, String>) {
         self.path_params = params
+    }
+
+    /// The client's address, when the request came from a TCP connection.
+    pub fn remote_addr(&self) -> Option<SocketAddr> {
+        self.remote_addr
+    }
+
+    /// `true` when the client sent `Expect: 100-continue` and is waiting before sending the body.
+    pub(crate) fn expects_continue(&self) -> bool {
+        self.parse_state == ParseState::Body
+            && self.http_version() == "1.1"
+            && self
+                .headers
+                .get("expect")
+                .is_some_and(|value| value.eq_ignore_ascii_case("100-continue"))
     }
 
     /// Returns a cookie value from the request's `Cookie` headers.

@@ -1,10 +1,11 @@
 use std::sync::Arc;
 
+use tokio::sync::watch;
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::TcpListener,
 };
-use yam_server::{Handler, Request, server::handle_request};
+use yam_server::{Handler, Request, ServerConfig, server::handle_request};
 
 #[tokio::test]
 async fn serves_two_requests_on_one_connection() {
@@ -20,7 +21,10 @@ async fn serves_two_requests_on_one_connection() {
     let handler: Arc<dyn Handler> = Arc::new(|request: Request| async move {
         request.path().to_string()
     });
-    let server = tokio::spawn(handle_request(server_stream, handler));
+    let (_stop, stopped) = watch::channel(false);
+    let server = tokio::spawn(async move {
+        handle_request(server_stream, handler, ServerConfig::default(), stopped).await
+    });
 
     client
         .write_all(

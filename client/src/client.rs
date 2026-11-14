@@ -7,7 +7,7 @@ use yam_shared::Headers;
 use crate::{
     error::Error,
     pool::Pools,
-    request::{Body, Method, RequestOptions},
+    request::{Body, ChunkStream, Method, RequestOptions},
     response::Response,
     transport,
 };
@@ -18,6 +18,7 @@ pub struct HttpClient {
     timeout: Option<Duration>,
     tls_configuration: Arc<ClientConfig>,
     headers: Headers,
+    max_redirects: usize,
     pools: Pools,
 }
 
@@ -40,7 +41,6 @@ macro_rules! route_verb {
     };
 }
 
-#[derive(Default)]
 pub struct HttpClientConfig {
     /// Base URL used when a request is given a relative path.
     pub base_url: Option<String>,
@@ -50,6 +50,20 @@ pub struct HttpClientConfig {
     pub tls_configuration: Option<ClientConfig>,
     /// Headers included with every request can be overridden per request.
     pub headers: Vec<(String, String)>,
+    /// How many redirects to follow before returning the redirect response. `0` disables following.
+    pub max_redirects: usize,
+}
+
+impl Default for HttpClientConfig {
+    fn default() -> Self {
+        Self {
+            base_url: None,
+            timeout: None,
+            tls_configuration: None,
+            headers: Vec::new(),
+            max_redirects: 10,
+        }
+    }
 }
 
 impl HttpClient {
@@ -81,6 +95,7 @@ impl HttpClient {
             timeout: config.timeout,
             tls_configuration: Arc::new(tls_configuration),
             headers,
+            max_redirects: config.max_redirects,
             pools: Pools::default(),
         }
     }
@@ -219,7 +234,7 @@ let response = client
         path: &str,
         options: RequestOptions,
     ) -> Result<Response, Error> {
-        let request = self.run_request(method, path, options);
+        let request = self.follow_redirects(method, path, options);
         match self.timeout {
             Some(duration) => tokio::time::timeout(duration, request)
                 .await
@@ -228,13 +243,68 @@ let response = client
         }
     }
 
-    async fn run_request(
+    /// Sends the request and follows up to `max_redirects` redirects.
+    /// 301/302/303 switch to a bodyless GET; 307/308 resend the same method and body.
+    async fn follow_redirects(
         &self,
-        method: Method,
+        mut method: Method,
         path: &str,
         options: RequestOptions,
     ) -> Result<Response, Error> {
-        let url = self.resolve_url(path)?;
+        let mut url = self.resolve_url(path)?;
+        let mut headers = options.headers;
+        let (mut body, mut chunks, mut content_type) = options
+            .body
+            .unwrap_or_else(|| Body::bytes(Vec::new()))
+            .into_parts();
+        let streamed = chunks.is_some();
+        let origin = url.origin();
+        let mut redirects = 0;
+        loop {
+            let response = self
+                .run_request(
+                    method,
+                    &url,
+                    &headers,
+                    &body,
+                    chunks.take(),
+                    content_type.as_deref(),
+                    url.origin() == origin,
+                )
+                .await?;
+
+            let keeps_body = matches!(response.status, 307 | 308);
+            let is_redirect = keeps_body || matches!(response.status, 301..=303);
+            // A streamed body is consumed by the first send and can't be resent.
+            if !is_redirect || redirects == self.max_redirects || (keeps_body && streamed) {
+                return Ok(response);
+            }
+            let Some(location) = response.header("location") else {
+                return Ok(response);
+            };
+            url = url.join(location)?;
+            redirects += 1;
+
+            if !keeps_body && !matches!(method, Method::GET | Method::HEAD) {
+                method = Method::GET;
+                body.clear();
+                content_type = None;
+                headers.retain(|(name, _)| !name.eq_ignore_ascii_case("content-type"));
+            }
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn run_request(
+        &self,
+        method: Method,
+        url: &Url,
+        headers: &[(String, String)],
+        body: &[u8],
+        chunks: Option<ChunkStream>,
+        content_type: Option<&str>,
+        same_origin: bool,
+    ) -> Result<Response, Error> {
         let host = url
             .host_str()
             .ok_or_else(|| Error::InvalidHostname(url.to_string()))?;
@@ -242,23 +312,20 @@ let response = client
             .port_or_known_default()
             .ok_or_else(|| Error::MissingPort(url.to_string()))?;
 
-        let (body, chunks, content_type) = options
-            .body
-            .unwrap_or_else(|| Body::bytes(Vec::new()))
-            .into_parts();
         let request_head = self.write_head(
             method,
-            &url,
+            url,
             host,
             port,
-            &options.headers,
-            content_type.as_deref(),
+            headers,
+            content_type,
             chunks.is_none().then_some(body.len()),
+            same_origin,
         );
 
         transport::send(
             &self.pools,
-            &url,
+            url,
             &self.tls_configuration,
             method,
             request_head,
@@ -278,12 +345,18 @@ let response = client
         request_headers: &[(String, String)],
         content_type: Option<&str>,
         content_length: Option<usize>,
+        same_origin: bool,
     ) -> Vec<u8> {
-        fn reserved(name: &str) -> bool {
+        let reserved = |name: &str| {
             ["host", "connection", "content-length", "transfer-encoding"]
                 .iter()
                 .any(|reserved| name.eq_ignore_ascii_case(reserved))
-        }
+                // Credentials aren't forwarded when a redirect leaves the original origin.
+                || (!same_origin
+                    && ["authorization", "cookie", "proxy-authorization"]
+                        .iter()
+                        .any(|sensitive| name.eq_ignore_ascii_case(sensitive)))
+        };
         fn push(head: &mut Vec<u8>, name: &str, value: &str) {
             head.extend(name.bytes().map(|byte| byte.to_ascii_lowercase()));
             head.extend_from_slice(b": ");

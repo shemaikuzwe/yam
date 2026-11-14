@@ -14,5 +14,5 @@ async fn main() -> std::io::Result<()> {
             req.param("id").unwrap_or_default().to_string()
         });
 
-    app.serve(TcpListener::bind(ADDR).await?).await
+    app.serve(TcpListener::bind(ADDR).await?, Default::default()).await
 }
