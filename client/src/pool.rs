@@ -25,7 +25,6 @@ pub(crate) enum Stream {
 pub(crate) struct Conn {
     pub(crate) stream: Stream,
     pub(crate) reusable: bool,
-    /// Read buffer reused across requests on this connection.
     pub(crate) buf: Vec<u8>,
 }
 
@@ -74,7 +73,6 @@ impl managed::Manager for ConnManager {
     }
 }
 
-/// Pools keyed by origin (`scheme://host[:port]`), so lookups borrow from the URL.
 #[derive(Default)]
 pub(crate) struct Pools(Mutex<HashMap<String, managed::Pool<ConnManager>>>);
 

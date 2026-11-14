@@ -268,10 +268,6 @@ let response = client
         .await
     }
 
-    /// Serializes the request line and headers in one buffer. Precedence, lowest
-    /// first: client defaults, the body's content type, per-request headers.
-    /// Framing and connection headers are always set by the client.
-    /// `content_length` is `None` for a chunked body.
     #[allow(clippy::too_many_arguments)]
     fn write_head(
         &self,
