@@ -106,3 +106,55 @@ async fn main() -> Result<(), Error> {
     println!("{user:#?}");
     Ok(())
 }
+```
+
+## Benchmarks
+
+Measured in CI against popular Rust frameworks and clients. Higher req/s and lower latency are better. Gaps under ±10% are CI noise and shown as **≈ same**.
+
+### Server
+
+Averaged over 3 routes.
+
+| Framework | req/s | vs yam | p50 (ms) | p99 (ms) |
+| --- | --: | --: | --: | --: |
+| **yam** | 155,642 | — | 0.40 | 0.82 |
+| axum | 155,202 | ≈ same | 0.40 | 0.86 |
+| hyper | 155,111 | ≈ same | 0.40 | 0.85 |
+| actix | 155,085 | ≈ same | 0.37 | 0.77 |
+
+<details>
+<summary>Per route</summary>
+
+| Route | Framework | req/s | vs yam | p50 (ms) | p99 (ms) |
+| --- | --- | --: | --: | --: | --: |
+| `/` | hyper | 157,334 | ≈ same | 0.40 | 0.80 |
+| `/` | axum | 157,201 | ≈ same | 0.39 | 0.87 |
+| `/` | **yam** | 155,579 | — | 0.40 | 0.81 |
+| `/` | actix | 155,261 | ≈ same | 0.37 | 0.81 |
+| `/json` | hyper | 156,390 | ≈ same | 0.40 | 0.82 |
+| `/json` | **yam** | 154,533 | — | 0.40 | 0.85 |
+| `/json` | axum | 154,362 | ≈ same | 0.40 | 0.87 |
+| `/json` | actix | 154,309 | ≈ same | 0.36 | 0.80 |
+| `/users/42` | **yam** | 156,813 | — | 0.40 | 0.80 |
+| `/users/42` | actix | 155,685 | ≈ same | 0.37 | 0.70 |
+| `/users/42` | axum | 154,043 | ≈ same | 0.40 | 0.83 |
+| `/users/42` | hyper | 151,608 | ≈ same | 0.40 | 0.91 |
+
+</details>
+
+
+### Client
+
+Averaged over `/` and `/json`.
+
+| Client | req/s | vs yam-client | p50 (ms) | p99 (ms) |
+| --- | --: | --: | --: | --: |
+| hyper | 110,590 | ≈ same | 0.14 | 0.29 |
+| **yam-client** | 109,746 | — | 0.14 | 0.24 |
+| reqwest | 87,098 | 1.3× slower | 0.17 | 0.43 |
+
+<details>
+<summary>Setup</summary>
+
+</details>
