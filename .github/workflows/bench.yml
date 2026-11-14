@@ -33,6 +33,7 @@ jobs:
       - run: ./bench/run.sh
         env:
           BASELINE_DIR: ${{ github.workspace }}/main
+      - run: ./bench/client.sh
 
       - run: cat bench/results.md >> "$GITHUB_STEP_SUMMARY"
 

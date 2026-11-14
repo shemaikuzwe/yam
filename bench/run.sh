@@ -19,7 +19,7 @@ if [[ -n "${BASELINE_DIR:-}" ]]; then
   base="$BASELINE_DIR/.bench-baseline"
   rm -rf "$base" && mkdir -p "$base"
   cp -r Cargo.toml Cargo.lock src "$base/"
-  if cargo build --release --quiet --bin yam --manifest-path "$base/Cargo.toml" --target-dir target/baseline; then
+  if cargo build --release --quiet --bin yam --bin client-yam --manifest-path "$base/Cargo.toml" --target-dir target/baseline; then
     FRAMEWORKS=(yam-main "${FRAMEWORKS[@]}")
   else
     echo "baseline build failed, skipping main" >&2
@@ -68,13 +68,8 @@ for fw in "${FRAMEWORKS[@]}"; do
 done
 
 # yam (main) and yam (this PR) are treated as two separate frameworks.
-jq -rs --arg cmd "oha -z $DURATION -c $CONNECTIONS" --arg cpus "$(nproc)" '
-  # always 2 decimals, e.g. 41 -> "41.00"
-  def ms: . * 100 | round | tostring | ("00" + .)[-3:] as $p | (.[:-2] | if . == "" then "0" else . end) + "." + $p[-2:];
-  def num: floor | tostring | [explode | reverse | _nwise(3) | reverse | implode] | reverse | join(",");
-  def x: (if . < 10 then . * 10 | round / 10 else round end) | tostring | . + "×";
-  # ratio = row / yam. Within ±10% is CI noise, so call it a tie.
-  def vs: if . > 1.1 then "\(x) faster" elif . < 0.9 then "\(1 / . | x) slower" else "≈ same" end;
+jq -L . -rs --arg cmd "oha -z $DURATION -c $CONNECTIONS" --arg cpus "$(nproc)" '
+  include "fmt";
 
   any(.[]; .fw == "yam-main") as $has_main
   | def title:
