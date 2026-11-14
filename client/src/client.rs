@@ -1,4 +1,4 @@
-use std::{format, sync::Arc, time::Duration};
+use std::{format, io::Write, sync::Arc, time::Duration};
 
 use tokio_rustls::rustls::{ClientConfig, RootCertStore};
 use url::Url;
@@ -242,53 +242,105 @@ let response = client
             .port_or_known_default()
             .ok_or_else(|| Error::MissingPort(url.to_string()))?;
 
-        let mut request_target = url.path().to_string();
-        if let Some(query) = url.query() {
-            request_target.push('?');
-            request_target.push_str(query);
-        }
-
-        let mut headers = self.headers.clone();
         let (body, chunks, content_type) = options
             .body
             .unwrap_or_else(|| Body::bytes(Vec::new()))
             .into_parts();
-        if let Some(content_type) = content_type {
-            headers.set("content-type", content_type);
-        }
-        for (name, value) in options.headers {
-            headers.set(&name, value);
-        }
-        if headers.get("accept-encoding").is_none() {
-            headers.set("accept-encoding", "gzip, deflate".into());
-        }
-        headers.set("host", format!("{host}:{port}"));
-        headers.set("connection", "keep-alive".into());
-        if chunks.is_some() {
-            headers.set("transfer-encoding", "chunked".into());
-        } else {
-            headers.set("content-length", body.len().to_string());
-        }
-
-        let mut request_head = format!("{} {} HTTP/1.1\r\n", method.as_str(), request_target);
-        for (name, value) in headers.iter() {
-            if chunks.is_some() && name.eq_ignore_ascii_case("content-length") {
-                continue;
-            }
-            request_head.push_str(&format!("{name}: {value}\r\n"));
-        }
-        request_head.push_str("\r\n");
+        let request_head = self.write_head(
+            method,
+            &url,
+            host,
+            port,
+            &options.headers,
+            content_type.as_deref(),
+            chunks.is_none().then_some(body.len()),
+        );
 
         transport::send(
             &self.pools,
             &url,
             &self.tls_configuration,
             method,
-            request_head.as_bytes(),
+            request_head,
             body,
             chunks,
         )
         .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn write_head(
+        &self,
+        method: Method,
+        url: &Url,
+        host: &str,
+        port: u16,
+        request_headers: &[(String, String)],
+        content_type: Option<&str>,
+        content_length: Option<usize>,
+    ) -> Vec<u8> {
+        fn reserved(name: &str) -> bool {
+            ["host", "connection", "content-length", "transfer-encoding"]
+                .iter()
+                .any(|reserved| name.eq_ignore_ascii_case(reserved))
+        }
+        fn push(head: &mut Vec<u8>, name: &str, value: &str) {
+            head.extend(name.bytes().map(|byte| byte.to_ascii_lowercase()));
+            head.extend_from_slice(b": ");
+            head.extend_from_slice(value.as_bytes());
+            head.extend_from_slice(b"\r\n");
+        }
+        let in_request = |name: &str| {
+            request_headers
+                .iter()
+                .any(|(key, _)| key.eq_ignore_ascii_case(name))
+        };
+
+        let mut head = Vec::with_capacity(256);
+        head.extend_from_slice(method.as_str().as_bytes());
+        head.push(b' ');
+        head.extend_from_slice(url.path().as_bytes());
+        if let Some(query) = url.query() {
+            head.push(b'?');
+            head.extend_from_slice(query.as_bytes());
+        }
+        head.extend_from_slice(b" HTTP/1.1\r\n");
+
+        for (name, value) in self.headers.iter() {
+            let replaced = reserved(name)
+                || in_request(name)
+                || (content_type.is_some() && name == "content-type");
+            if !replaced {
+                push(&mut head, name, value);
+            }
+        }
+        if let Some(content_type) = content_type
+            && !in_request("content-type")
+        {
+            push(&mut head, "content-type", content_type);
+        }
+        for (i, (name, value)) in request_headers.iter().enumerate() {
+            // A later entry with the same name replaces this one.
+            let replaced = request_headers[i + 1..]
+                .iter()
+                .any(|(key, _)| key.eq_ignore_ascii_case(name));
+            if !reserved(name) && !replaced {
+                push(&mut head, name, value);
+            }
+        }
+        if self.headers.get("accept-encoding").is_none() && !in_request("accept-encoding") {
+            push(&mut head, "accept-encoding", "gzip, deflate");
+        }
+
+        let _ = write!(head, "host: {host}:{port}\r\nconnection: keep-alive\r\n");
+        match content_length {
+            Some(length) => {
+                let _ = write!(head, "content-length: {length}\r\n");
+            }
+            None => head.extend_from_slice(b"transfer-encoding: chunked\r\n"),
+        }
+        head.extend_from_slice(b"\r\n");
+        head
     }
 
     fn resolve_url(&self, value: &str) -> Result<Url, Error> {
