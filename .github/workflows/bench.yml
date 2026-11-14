@@ -32,7 +32,11 @@ jobs:
 
       - run: cat bench/results.md >> "$GITHUB_STEP_SUMMARY"
 
-      - if: github.event_name == 'pull_request'
+      # Fork and Dependabot PRs get a read-only token, so they only get the job summary.
+      - if: >-
+          github.event_name == 'pull_request' &&
+          github.event.pull_request.head.repo.full_name == github.repository &&
+          github.actor != 'dependabot[bot]'
         uses: marocchino/sticky-pull-request-comment@v2
         with:
           header: bench

@@ -31,11 +31,27 @@ cargo build --release --quiet
 
 for fw in "${FRAMEWORKS[@]}"; do
   if [[ $fw == yam-main ]]; then bin=target/baseline/release/yam; else bin=target/release/$fw; fi
+  # Fail fast if something else (e.g. a dev server) already holds the port.
+  if (: < /dev/tcp/127.0.0.1/3000) 2>/dev/null; then
+    echo "port 3000 is already in use" >&2
+    exit 1
+  fi
+
   "$bin" &
   pid=$!
   trap 'kill $pid 2>/dev/null || true' EXIT
 
-  until curl -s -o /dev/null "$URL/"; do sleep 0.1; done
+  # Wait up to ~10s, stop early if the server exits.
+  ready=0
+  for _ in {1..100}; do
+    kill -0 "$pid" 2>/dev/null || break
+    if curl -s -o /dev/null --max-time 1 "$URL/"; then ready=1; break; fi
+    sleep 0.1
+  done
+  if (( ! ready )); then
+    echo "$fw failed to start" >&2
+    exit 1
+  fi
 
   for route in "${ROUTES[@]}"; do
     oha -z 2s -c "$CONNECTIONS" --no-tui "$URL$route" > /dev/null
@@ -53,24 +69,28 @@ for fw in "${FRAMEWORKS[@]}"; do
   wait "$pid" 2>/dev/null || true
 done
 
+# yam (main) and yam (this PR) are treated as two separate frameworks.
 jq -rs --arg cmd "oha -z $DURATION -c $CONNECTIONS" --arg cpus "$(nproc)" '
   def ms: . * 100 | round / 100 | tostring;
   def num: floor | tostring | [explode | reverse | _nwise(3) | reverse | implode] | reverse | join(",");
-  def times: . * 10 | round / 10 | tostring | (if test("\\.") then . else . + ".0" end) + "×";
-  def name: if . == "yam" then "**yam**" else . end;
-  def change($old; $new):
-    (($new / $old - 1) * 100 | round) as $p
-    | (if $p < 0 then "-" else "+" end)
-      + ($p | if . < 0 then -. else . end | num) + "%"
-      + (if $p > 10 then " 🚀" elif $p < -10 then " 🐢" else " ≈" end);
+  def times: (if . < 1 then . * 100 | round / 100 else . * 10 | round / 10 end)
+    | tostring | (if test("\\.") then . else . + ".0" end) + "×";
 
-  (map(select(.fw == "yam-main") | {(.route): .}) | add) as $main
-  | map(select(.fw != "yam-main")) as $rows
-  | ($rows | map(select(.fw == "yam") | {(.route): .rps}) | add) as $yam
-  | ($rows | group_by(.fw)
+  any(.[]; .fw == "yam-main") as $has_main
+  | def title:
+      if . == "yam-main" then "**yam (main)**"
+      elif . == "yam" then (if $has_main then "**yam (this PR)**" else "**yam**" end)
+      else . end;
+    # baselines every row is compared against: [fw, column title]
+    (if $has_main then [["yam-main", "vs yam (main)"], ["yam", "vs yam (this PR)"]]
+     else [["yam", "vs yam"]] end) as $refs
+  | (reduce .[] as $r ({}; .[$r.fw][$r.route] = $r.rps)) as $rps
+  | (group_by(.fw)
      | map({fw: .[0].fw, rps: (map(.rps) | add / length), p50: (map(.p50) | add / length)})
      | sort_by(-.rps)) as $avg
-  | ($avg[] | select(.fw == "yam") | .rps) as $yam_avg
+  | (reduce $avg[] as $a ({}; .[$a.fw] = $a.rps)) as $avg_rps
+  | ($refs | map(.[1]) | join(" | ")) as $ref_cols
+  | ($refs | map("--:") | join("|")) as $ref_align
   | [
       "## Benchmarks",
       "",
@@ -78,34 +98,25 @@ jq -rs --arg cmd "oha -z $DURATION -c $CONNECTIONS" --arg cpus "$(nproc)" '
       "",
       "`\($cmd)` · \($cpus) CPUs · keep-alive · release build",
       "",
-      (if $main then
-        "### This PR vs main",
-        "",
-        "| route | main req/s | PR req/s | change | main p50 (ms) | PR p50 (ms) |",
-        "|---|--:|--:|--:|--:|--:|",
-        ($rows[] | select(.fw == "yam") | $main[.route] as $m
-          | "| `\(.route)` | \($m.rps | num) | \(.rps | num) | \(change($m.rps; .rps)) | \($m.p50 | ms) | \(.p50 | ms) |"),
-        "",
-        "Changes within ±10% are runner noise (≈).",
-        ""
-      else empty end),
       "### Summary",
       "",
-      "| framework | avg req/s | vs yam | avg p50 (ms) |",
-      "|---|--:|--:|--:|",
-      ($avg[] | "| \(.fw | name) | \(.rps | num) | \(.rps / $yam_avg | times) | \(.p50 | ms) |"),
+      "| framework | avg req/s | \($ref_cols) | avg p50 (ms) |",
+      "|---|--:|\($ref_align)|--:|",
+      ($avg[] | . as $a
+        | "| \($a.fw | title) | \($a.rps | num) | \([$refs[] | $a.rps / $avg_rps[.[0]] | times] | join(" | ")) | \($a.p50 | ms) |"),
       "",
       "### Per route",
       "",
-      "| framework | route | req/s | vs yam | p50 (ms) | p99 (ms) |",
-      "|---|---|--:|--:|--:|--:|",
-      ($rows[] | "| \(.fw | name) | `\(.route)` | \(.rps | num) | \(.rps / $yam[.route] | times) | \(.p50 | ms) | \(.p99 | ms) |"),
+      "| framework | route | req/s | \($ref_cols) | p50 (ms) | p99 (ms) |",
+      "|---|---|--:|\($ref_align)|--:|--:|",
+      (.[] | . as $r
+        | "| \($r.fw | title) | `\($r.route)` | \($r.rps | num) | \([$refs[] | $r.rps / $rps[.[0]][$r.route] | times] | join(" | ")) | \($r.p50 | ms) | \($r.p99 | ms) |"),
       "",
       "<details><summary>How to read this</summary>",
       "",
       "- **req/s**: throughput, higher is better. **p50 / p99**: median and slowest-1% latency, lower is better.",
-      "- **vs yam**: that framework'"'"'s req/s divided by yam'"'"'s on the same route.",
-      "- **This PR vs main**: yam built from the base branch, using this PR'"'"'s bench harness.",
+      "- **vs yam (…)**: that row'"'"'s req/s divided by that yam'"'"'s req/s on the same route. Above 1.0× is faster, below is slower.",
+      "- **yam (main)**: yam built from the base branch, using this PR'"'"'s bench harness. Compare it with **yam (this PR)** to see what the PR changed.",
       "- Results come from a shared CI runner, so absolute numbers vary by about ±10–20% between runs. Compare the ratios, which are measured on the same machine in the same job.",
       "- Routes: `/` plain text · `/json` serde JSON · `/users/{id}` path param.",
       "",
